@@ -13,8 +13,11 @@ struct LCD: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 5) {
-                Text(ac?.cleaning == true ? "CLEAN" : "SET TEMP.").font(.system(size: 9.5, weight: .heavy)).tracking(0.6)
+                Text(ac?.cleaning == true ? "CLEAN" : ac?.phase == "holding" ? "SET TEMP.  REST" : "SET TEMP.")
+                    .font(.system(size: 9.5, weight: .heavy)).tracking(0.6)
                 Spacer()
+                if let fault = ac?.fault { Text("E\(fault)").font(.system(size: 9.5, weight: .black)) }
+                if ac?.filterDue == true { Image(systemName: "aqi.medium").font(.system(size: 9)) }
                 if locked { Image(systemName: "lock.fill").font(.system(size: 9)) }
                 if ac?.sleep == true { Image(systemName: "moon.fill").font(.system(size: 9)) }
                 if let minutes = ac?.offIn {

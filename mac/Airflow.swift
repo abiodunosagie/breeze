@@ -16,7 +16,7 @@ struct AirStyle: Hashable {
     /// Gentle waviness of each line.
     let wave: Double
 
-    static func of(mode: String?, fan: String?, swing: String?, cleaning: Bool) -> AirStyle {
+    static func of(mode: String?, fan: String?, swing: String?, cleaning: Bool, boost: Bool = false) -> AirStyle {
         let (near, far): (Color, Color)
         switch cleaning ? "clean" : mode ?? "cool" {
         case "heat": (near, far) = (Color(red: 1.0, green: 0.82, blue: 0.48), Color(red: 1.0, green: 0.42, blue: 0.28))
@@ -28,9 +28,10 @@ struct AirStyle: Hashable {
         }
         let level: Double = cleaning ? 0.35 : ["silent": 0.25, "low": 0.45, "medium": 0.65, "high": 0.85, "max": 1.0, "auto": 0.7][fan ?? ""] ?? 0.7
         let sideways = swing == "horizontal" || swing == "both"
+        // Turbo and Flash: the air rushes out faster.
         return AirStyle(near: near, far: far, glow: far,
                         lines: 7 + Int(level * 6),
-                        speed: 0.35 + level * 0.9,
+                        speed: (0.35 + level * 0.9) * (boost ? 1.4 : 1),
                         spread: sideways ? 0.95 : 0.75,
                         sway: sideways ? 0.18 : 0,
                         wave: swing == "vertical" || swing == "both" ? 1.0 : 0.55)
@@ -43,7 +44,11 @@ struct ACUnit: View {
     let ac: ACState
 
     private var flowing: Bool { ac.power || ac.cleaning }
-    private var style: AirStyle { .of(mode: ac.mode, fan: ac.fan, swing: ac.swing, cleaning: ac.cleaning && !ac.power) }
+    private var style: AirStyle {
+        .of(mode: ac.mode, fan: ac.fan, swing: ac.swing, cleaning: ac.cleaning && !ac.power, boost: ac.turbo || ac.flash)
+    }
+    /// The air follows how hard the AC really works; a clean blows gently.
+    private var effort: Double { ac.cleaning && !ac.power ? 0.5 : ac.effort }
 
     /// The air is wider than the panel, so it runs out at both walls, and tall enough to drift
     /// down behind the temperature before it fades away.
@@ -54,7 +59,7 @@ struct ACUnit: View {
             .frame(maxWidth: .infinity)
             .frame(maxHeight: .infinity, alignment: .top)
             .background(alignment: .top) {
-                Airflow(style: style, running: flowing)
+                Airflow(style: style, running: flowing, effort: effort)
                     .id(style)  // a new mode fades in over the old one, colours and all
                     .transition(.opacity)
                     .frame(width: Self.airSize.width, height: Self.airSize.height)
@@ -87,7 +92,8 @@ struct ACUnit: View {
             }
             .overlay(alignment: .topTrailing) {
                 HStack(spacing: 4) {
-                    Text(ac.power ? "\(Int(target))" : "")
+                    // The unit's own display goes dark when its light is switched off.
+                    Text(ac.power && ac.display ? "\(Int(target))" : "")
                         .font(.system(size: 13, weight: .semibold, design: .rounded))
                         .contentTransition(.numericText(value: target))
                     Circle().fill(flowing ? style.far : Color(white: 0.75)).frame(width: 5, height: 5)
@@ -106,12 +112,37 @@ struct Airflow: View {
     let style: AirStyle
     /// False while the AC is off: the hidden air stops drawing, so it costs nothing.
     let running: Bool
+    /// How hard the AC works, 0 to 1. A new reading eases in over a few seconds, never jumps.
+    let effort: Double
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var ease = Ease()
 
     var body: some View {
         // With Reduce Motion on, one still frame of the air instead of a moving one.
         TimelineView(.animation(minimumInterval: nil, paused: !running || reduceMotion)) { context in
-            AirflowCanvas(style: style, time: context.date.timeIntervalSinceReferenceDate)
+            let time = context.date.timeIntervalSinceReferenceDate
+            AirflowCanvas(style: style, time: time, effort: ease.value(at: time))
+        }
+        .onAppear { ease.jump(to: effort) }
+        .onChange(of: effort) { ease.move(to: effort, at: Date().timeIntervalSinceReferenceDate) }
+    }
+
+    /// Glides from one effort reading to the next.
+    final class Ease {
+        private var from = 1.0, to = 1.0, start = 0.0
+        private static let seconds = 3.0
+
+        func jump(to value: Double) { from = value; to = value }
+
+        func move(to value: Double, at time: Double) {
+            from = self.value(at: time)
+            to = value
+            start = time
+        }
+
+        func value(at time: Double) -> Double {
+            let t = min(max((time - start) / Self.seconds, 0), 1)
+            return from + (to - from) * t * t * (3 - 2 * t)  // smoothstep
         }
     }
 }
@@ -121,13 +152,15 @@ struct Airflow: View {
 struct AirflowCanvas: View {
     let style: AirStyle
     let time: Double
+    var effort = 1.0
     private static let steps = 32
     private static let particlesPerLine = 3
 
     var body: some View {
         Canvas { canvas, size in
             // The air breathes: a slow swell in strength, like a real draught.
-            let breath = 0.85 + 0.15 * sin(time * 0.9)
+            // Calmer and dimmer while the AC rests, full while it pushes.
+            let breath = (0.85 + 0.15 * sin(time * 0.9)) * (0.45 + 0.55 * effort)
             let mid = size.width / 2
 
             // Mist pouring from the vent, wide and soft.

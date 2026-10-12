@@ -90,25 +90,26 @@ private struct ACControls: View {
             header
             ACUnit(target: shown, ac: ac)
                 .frame(height: 150)
-                .overlay(alignment: .bottom) {
-                    if ac.cleaning {
-                        Label("Self-cleaning. Press power to stop it.", systemImage: "sparkles")
-                            .font(.system(size: 12, weight: .semibold))
-                            .padding(.horizontal, 12).padding(.vertical, 7)
-                            .background(Capsule().fill(ACTheme.eco.opacity(0.22)))
-                            .foregroundStyle(ACTheme.eco)
-                            .transition(.opacity)
-                    }
-                }
+                .overlay(alignment: .bottom) { banner }
+                .animation(.easeInOut(duration: 0.3), value: banner.key)
             VStack(alignment: .leading, spacing: 18) {
                 HStack(alignment: .center) {
-                    HStack(alignment: .firstTextBaseline, spacing: 2) {
-                        Text("\(Int(shown))")
-                            .font(.system(size: 66, weight: .thin, design: .rounded))
-                            .contentTransition(.numericText(value: shown))
-                        Text("°C").font(.system(size: 20, weight: .medium)).foregroundStyle(ACTheme.accent)
+                    VStack(alignment: .leading, spacing: 0) {
+                        HStack(alignment: .firstTextBaseline, spacing: 2) {
+                            Text("\(Int(shown))")
+                                .font(.system(size: 66, weight: .thin, design: .rounded))
+                                .contentTransition(.numericText(value: shown))
+                            Text("°C").font(.system(size: 20, weight: .medium)).foregroundStyle(ACTheme.accent)
+                        }
+                        .animation(.snappy(duration: 0.25), value: shown)
+                        Text(statusLine)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(ACTheme.dim)
+                            .contentTransition(.opacity)
+                            .animation(.easeInOut(duration: 0.3), value: statusLine)
                     }
-                    .animation(.snappy(duration: 0.25), value: shown)
+                    // Fan only: the AC does not cool, so the temperature has no say.
+                    .opacity(fanOnly ? 0.4 : 1)
                     Spacer()
                     if ac.hasEco { ecoToggle }
                 }
@@ -118,14 +119,50 @@ private struct ACControls: View {
                                       draft = nil
                                       if value != ac.target { client.setAC(["target": value]) }
                                   })
+                    .disabled(fanOnly)
+                    .opacity(fanOnly ? 0.4 : 1)
                 tiles
                 extras
             }
             .opacity(ac.power ? 1 : 0.45)
+            // Sleep mode: the panel dims for the night.
+            .brightness(ac.sleep && ac.power ? -0.08 : 0)
+            .animation(.easeInOut(duration: 0.5), value: ac.sleep)
             // A drag cut short by the panel closing must not pin the slider.
             .onDisappear { draft = nil }
             .animation(.easeInOut(duration: 0.3), value: ac.power)
         }
+    }
+
+    private var fanOnly: Bool { ac.mode == "fan" }
+
+    /// What the AC is really doing, under the big number.
+    private var statusLine: String {
+        if ac.cleaning { return "Self-cleaning" + (ac.cleaningMinutes.map { ", \($0) min so far" } ?? "") }
+        switch ac.phase {
+        case "working": return ac.turbo ? "Turbo, cooling fast" : ac.mode == "dry" ? "Drying the air" : "Cooling the room"
+        case "holding": return "Room at temperature, resting"
+        case "fan": return "Fan only, no cooling"
+        default: return "Off"
+        }
+    }
+
+    /// One message on the unit, the most important first: fault, clean, filter.
+    private var banner: Banner {
+        if let fault = ac.fault {
+            return Banner(key: "fault", text: "The AC reports fault \(fault). Check the unit.", symbol: "exclamationmark.triangle.fill",
+                          color: Color(red: 1, green: 0.45, blue: 0.4))
+        }
+        if ac.cleaning {
+            return Banner(key: "clean", text: "Self-cleaning. Press power to stop it.", symbol: "sparkles", color: ACTheme.eco)
+        }
+        if ac.filterDue {
+            return Banner(key: "filter", text: "Time to wash the filter.", symbol: "aqi.medium", color: Color(red: 1, green: 0.78, blue: 0.4))
+        }
+        if !ac.display && ac.power {
+            return Banner(key: "light", text: "The unit's light is off.", symbol: "lightbulb.slash", color: ACTheme.dim)
+        }
+        return Banner(key: "none", text: "", symbol: "", color: .clear)
     }
 
     private var header: some View {
@@ -381,5 +418,24 @@ struct PressScale: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.94 : 1)
             .animation(.spring(duration: 0.2), value: configuration.isPressed)
+    }
+}
+
+/// A short message shown on the drawn unit.
+private struct Banner: View {
+    let key: String
+    let text: String
+    let symbol: String
+    let color: Color
+
+    var body: some View {
+        if !text.isEmpty {
+            Label(text, systemImage: symbol)
+                .font(.system(size: 12, weight: .semibold))
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .background(Capsule().fill(color.opacity(0.22)))
+                .foregroundStyle(color)
+                .transition(.opacity)
+        }
     }
 }

@@ -45,6 +45,10 @@ FANS = {"auto": Fan.AUTO, "silent": Fan.SILENT, "low": Fan.LOW, "medium": Fan.ME
         "max": Fan.MAX}
 SWINGS = {"off": Swing.OFF, "vertical": Swing.VERTICAL, "horizontal": Swing.HORIZONTAL, "both": Swing.BOTH}
 TOGGLES = ("power", "eco", "turbo", "sleep", "flash")
+# Below this share of the fastest compressor speed seen, the AC is holding the room, not cooling it.
+HOLDING_SHARE = 0.25
+# Starting guess for the compressor's top speed; raised as faster speeds are seen.
+COMPRESSOR_HZ_GUESS = 60
 # The Timer button: turn the AC off after this many minutes.
 TIMER_MINUTES = (30, 60, 120, 180, 240, 480)
 
@@ -118,6 +122,8 @@ class ACSession:
         self._off_due = False  # the timer fired; turn off on the next fresh reading
         self.notice = ""  # a short message for the user, shown once per notice_id
         self.notice_id = 0
+        self._top_hz = COMPRESSOR_HZ_GUESS  # fastest compressor speed seen, to judge how hard it works
+        self._cleaning_since: float | None = None  # loop time the current self clean was first seen
         if self._link:
             self.status = "connecting"
 
@@ -144,6 +150,14 @@ class ACSession:
             "display": bool(dev.display_on),
             # Self clean runs with the unit off; any change but power would end it.
             "cleaning": bool(dev.self_clean_active),
+            "cleaning_minutes": self._cleaning_minutes(),
+            # What the unit is really doing, beyond its settings.
+            "effort": self._effort(dev),
+            "phase": self._phase(dev),
+            "compressor_hz": dev.compressor_frequency,
+            "coil": dev.indoor_coil_temperature,
+            "fault": dev.error_code or None,
+            "filter_due": bool(dev.filter_alert),
         }
         # Changes on their way show already, so the app never snaps back meanwhile.
         state.update(self._inflight)
@@ -161,6 +175,32 @@ class ACSession:
             "timer_choices": list(TIMER_MINUTES),
             "off_in": self._minutes_left(),
         }
+
+    def _effort(self, dev: Any) -> float:
+        """How hard the AC works right now, 0 to 1, from the compressor (or the fan in fan mode).
+        The panel's air follows this, so it calms down once the room has reached the setting."""
+        if not dev.power_state:
+            return 0.0
+        if dev.operational_mode == Mode.FAN_ONLY or dev.compressor_frequency is None:
+            level = {Fan.SILENT: 0.25, Fan.LOW: 0.45, Fan.MEDIUM: 0.65, Fan.HIGH: 0.85, Fan.MAX: 1.0}
+            return level.get(dev.fan_speed, 0.7)
+        share = (dev.compressor_frequency or 0) / max(self._top_hz, 1)
+        # Still some air while holding: the indoor fan keeps running.
+        return round(max(0.2, min(share, 1.0)), 2)
+
+    def _phase(self, dev: Any) -> str:
+        """off, fan (fan only), working (compressor pushing) or holding (room reached, resting)."""
+        if not dev.power_state:
+            return "off"
+        if dev.operational_mode == Mode.FAN_ONLY or dev.compressor_frequency is None:
+            return "fan"
+        working = (dev.compressor_frequency or 0) >= HOLDING_SHARE * self._top_hz
+        return "working" if working else "holding"
+
+    def _cleaning_minutes(self) -> int | None:
+        if self._cleaning_since is None:
+            return None
+        return int((asyncio.get_running_loop().time() - self._cleaning_since) // 60)
 
     def _set_status(self, status: str) -> None:
         """Every reading is sent on, changed or not: the room temperature moves on its own."""
@@ -202,6 +242,10 @@ class ACSession:
         dev = self._make_device(ip=link["ip"], port=link["port"], device_id=link["id"])
         await dev.authenticate(link["token"], link["key"])
         await dev.get_capabilities()
+        # Extra readings, one more exchange each per poll: compressor and coils, indoor fan, energy.
+        dev.enable_group1_data_requests = True
+        dev.enable_group2_data_requests = True
+        dev.enable_energy_usage_requests = True
         self._device = dev
 
     async def _poll_loop(self) -> None:
@@ -240,6 +284,13 @@ class ACSession:
     def _after_fresh_reading(self) -> None:
         """Things that wait for a reading we can trust: a due timer, changes held back by a failure."""
         dev = self._device
+        hz = dev.compressor_frequency or 0
+        self._top_hz = max(self._top_hz, hz)
+        if dev.self_clean_active:
+            if self._cleaning_since is None:
+                self._cleaning_since = asyncio.get_running_loop().time()
+        else:
+            self._cleaning_since = None
         if self._off_timer and not dev.power_state and not self._pending.get("power"):
             self._cancel_timer()  # switched off by hand: an old timer must not catch it later
         if self._off_due:

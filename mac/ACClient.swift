@@ -20,6 +20,16 @@ struct ACState: Decodable, Equatable {
     var display = false
     /// Self clean is running (the unit is off meanwhile).
     var cleaning = false
+    var cleaningMinutes: Int?
+    /// How hard the AC really works, 0 to 1 (compressor, or fan in fan mode).
+    var effort: Double = 0
+    /// off, fan, working or holding (room reached, compressor resting).
+    var phase = "off"
+    var compressorHz: Int?
+    var coil: Double?
+    /// The unit's own error code, when it reports one.
+    var fault: Int?
+    var filterDue = false
     var min: Double = 16
     var max: Double = 30
     var modes: [String] = []
@@ -38,6 +48,10 @@ struct ACState: Decodable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case status, power, mode, target, indoor, outdoor, fan, swing, eco, turbo, sleep, flash, display, cleaning
+        case cleaningMinutes = "cleaning_minutes"
+        case effort, phase, coil, fault
+        case compressorHz = "compressor_hz"
+        case filterDue = "filter_due"
         case min, max, modes, fans, swings
         case hasEco = "has_eco"
         case hasTurbo = "has_turbo"
@@ -67,6 +81,13 @@ struct ACState: Decodable, Equatable {
         flash = value(.flash, false)
         display = value(.display, false)
         cleaning = value(.cleaning, false)
+        cleaningMinutes = try? c.decode(Int.self, forKey: .cleaningMinutes)
+        effort = value(.effort, 0.0)
+        phase = value(.phase, "off")
+        compressorHz = try? c.decode(Int.self, forKey: .compressorHz)
+        coil = try? c.decode(Double.self, forKey: .coil)
+        fault = try? c.decode(Int.self, forKey: .fault)
+        filterDue = value(.filterDue, false)
         min = value(.min, 16.0)
         max = value(.max, 30.0)
         modes = value(.modes, [String]())

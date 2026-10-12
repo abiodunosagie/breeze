@@ -22,6 +22,10 @@ class FakeAC:
         self.eco = self.ieco = self.turbo = self.sleep = self.flash = False
         self.display_on = True
         self.self_clean_active = False
+        self.compressor_frequency = 52
+        self.indoor_coil_temperature = 16.5
+        self.error_code = 0
+        self.filter_alert = False
         self.online = True
         self.min_target_temperature, self.max_target_temperature = 16.0, 30.0
         self.supported_operation_modes = [MODES["fan"], MODES["dry"], MODES["cool"], MODES["auto"]]
@@ -247,3 +251,31 @@ def test_save_link_is_private_and_whole(tmp_path, monkeypatch):
     assert oct(os.stat(folder).st_mode & 0o777) == "0o700"
     assert oct(os.stat(folder / "ac.json").st_mode & 0o777) == "0o600"
     assert [p.name for p in folder.iterdir()] == ["ac.json"]  # no temp file left behind
+
+
+def test_effort_follows_the_compressor():
+    async def check():
+        session = online_session()
+        dev = session._device
+        session._top_hz = 80
+        dev.compressor_frequency = 80
+        working = session.message()["effort"]
+        assert session.message()["phase"] == "working"
+        dev.compressor_frequency = 0  # room reached, compressor resting
+        holding = session.message()["effort"]
+        assert session.message()["phase"] == "holding"
+        dev.operational_mode, dev.fan_speed = MODES["fan"], FANS["low"]
+        fan = session.message()["effort"]
+        dev.power_state = False
+        off = session.message()["effort"]
+        return working, holding, fan, off
+    assert asyncio.run(check()) == (1.0, 0.2, 0.45, 0.0)
+
+
+def test_fault_and_filter_are_reported():
+    async def check():
+        session = online_session()
+        session._device.error_code, session._device.filter_alert = 5, True
+        m = session.message()
+        return m["fault"], m["filter_due"]
+    assert asyncio.run(check()) == (5, True)
