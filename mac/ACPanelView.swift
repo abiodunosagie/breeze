@@ -166,11 +166,10 @@ private struct ACControls: View {
             return Notice(text: "Drying the coil, up to \(minutes) min. Power stops it now.", symbol: "wind", tint: ACTheme.accent)
         }
         if ac.cleaning { return Notice(text: "Self-cleaning. Power stops it.", symbol: "sparkles", tint: ACTheme.eco) }
-        if ac.health?.state == "low" {
-            return Notice(text: "The coil is not getting as cold as it did. Check the filter.", symbol: "thermometer.medium",
-                          tint: ACTheme.caution)
+        if ac.health?.state == "low", let text = ac.health?.message {
+            return Notice(text: text, symbol: "thermometer.medium", tint: ACTheme.caution)
         }
-        if ac.filterDue || ac.filterWashDue { return Notice(text: "Time to wash the filter.", symbol: "aqi.medium", tint: ACTheme.caution) }
+        if ac.filterDue { return Notice(text: "Time to wash the filter.", symbol: "aqi.medium", tint: ACTheme.caution) }
         if !ac.display && ac.power { return Notice(text: "The unit's light is off.", symbol: "lightbulb.slash", tint: ACTheme.dim) }
         return nil
     }

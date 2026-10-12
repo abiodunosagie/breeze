@@ -1,20 +1,9 @@
 """Energy from the AC's running total: days, hours, resets, gaps and bad files."""
 
 import json
-from datetime import datetime
 
 from energy import EnergyLog
-
-
-class Clock:
-    def __init__(self, when):
-        self.now = datetime.fromisoformat(when).timestamp()
-
-    def __call__(self):
-        return self.now
-
-    def advance(self, minutes):
-        self.now += minutes * 60
+from helpers import Clock
 
 
 def log_at(when, tmp_path, write=lambda path, data: None):

@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from test_care import Clock
+from helpers import Clock
 from timetable import ScheduleError, Timetable, changes_for, check_entries
 
 # 2026-10-12 is a Monday (weekday 0).
@@ -104,3 +104,29 @@ def test_the_session_runs_a_schedule_and_reports_a_refusal(tmp_path):
     session._run_schedules()
     assert session._pending.get("target") == 26.0  # the good one went through
     assert "did not run" in session.notice  # the unit has no heat
+
+
+def test_a_schedule_never_interrupts_a_self_clean(tmp_path):
+    from test_ac import online_session
+    session = online_session()
+    clock = Clock("2026-10-12T06:00:00")
+    session.timetable = Timetable(tmp_path / "s.json", lambda path, data: None, clock)
+    session.timetable.replace([MORNING])
+    session._device.power_state, session._device.self_clean_active = False, True
+    session._kick = lambda: None
+    clock.advance(31)
+    session._run_schedules()
+    assert session._pending == {} and "cleaning itself" in session.notice
+
+
+def test_an_off_schedule_sends_nothing_when_already_off(tmp_path):
+    from test_ac import online_session
+    session = online_session()
+    clock = Clock("2026-10-12T22:00:00")
+    session.timetable = Timetable(tmp_path / "s.json", lambda path, data: None, clock)
+    session.timetable.replace([NIGHT_OFF])
+    session._device.power_state = False
+    session._kick = lambda: None
+    clock.advance(61)
+    session._run_schedules()
+    assert session._pending == {}

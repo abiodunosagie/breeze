@@ -5,10 +5,11 @@ import json
 
 import pytest
 
+import ac
 from ac import ACError
 from sleepcurve import SleepCurve
 from test_ac import online_session
-from test_care import Clock
+from helpers import Clock
 
 
 def curve_at(when, tmp_path):
@@ -74,6 +75,7 @@ def test_session_raises_the_setting_and_restores_in_the_morning(tmp_path):
         clock.advance(61)
         session._follow_curve(session._device)
         raised = session._pending.pop("target")
+        session._device.target_temperature = raised  # sent
         clock.advance(300)
         session._follow_curve(session._device)
         return raised, session._pending.get("target"), session.curve.active
@@ -126,12 +128,12 @@ def test_an_end_seen_hours_late_is_skipped(tmp_path):
         session.start_sleep_curve(360)
         clock.advance(61)
         session._follow_curve(session._device)
-        session._pending.clear()
+        session._device.target_temperature = session._pending.pop("target")  # sent
         clock.advance(300 + 60)  # the Mac slept through the end
         session._follow_curve(session._device)
         return session._pending, session.curve.active, session.notice
     pending, active, notice = asyncio.run(check())
-    assert pending == {} and not active and "asleep" in notice
+    assert pending == {} and not active and "left as it was" in notice
 
 
 def test_the_off_timer_ends_the_curve_too(tmp_path):
@@ -141,3 +143,38 @@ def test_the_off_timer_ends_the_curve_too(tmp_path):
         session._turn_off()
         return session.curve.active, "target" in session._pending
     assert asyncio.run(check()) == (False, False)
+
+
+def test_a_new_length_keeps_the_starting_point(tmp_path):
+    session, clock = session_with_curve(tmp_path)
+    session.start_sleep_curve(420)
+    clock.advance(121)
+    session._device.target_temperature = 18.0  # raised by the curve
+    session.start_sleep_curve(540)
+    assert session.curve.state["start_target"] == 16.0
+
+
+def test_a_change_on_the_hand_remote_stops_it(tmp_path):
+    session, _ = session_with_curve(tmp_path)
+    session.start_sleep_curve(420)
+    session._device.target_temperature = 22.0  # from the hand remote
+    session._follow_curve(session._device)
+    assert not session.curve.active and "target" not in session._pending
+
+
+def test_leaving_cooling_on_the_remote_stops_it(tmp_path):
+    session, _ = session_with_curve(tmp_path)
+    session.start_sleep_curve(420)
+    session._device.operational_mode = ac.MODES["fan"]
+    session._follow_curve(session._device)
+    assert not session.curve.active
+
+
+def test_power_back_after_a_cut_keeps_the_curve(tmp_path):
+    async def check():
+        session, clock = session_with_curve(tmp_path)
+        session.start_sleep_curve(420)
+        session._remember_running()
+        session.restore()
+        return session.curve.active, "target" in session._pending, session._pending.get("power")
+    assert asyncio.run(check()) == (True, False, True)

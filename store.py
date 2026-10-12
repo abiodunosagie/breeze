@@ -18,6 +18,8 @@ SCHEDULE_FILE = CONFIG_DIR / "schedules.json"
 SLEEP_FILE = CONFIG_DIR / "sleep.json"
 HEALTH_FILE = CONFIG_DIR / "health.json"
 MAX_PRICE = 100_000.0  # naira per kWh; anything above is a typo
+# The logs Breeze keeps (energy, care, health) are written at most this often, and on quit.
+SAVE_EVERY_SECONDS = 300.0
 
 # The user's choices, all off until turned on.
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -61,6 +63,20 @@ def write_private(path: Path, data: Any) -> None:
     except BaseException:
         os.unlink(temp)
         raise
+
+
+def is_number(value: Any) -> bool:
+    """A real, finite number from JSON: not a bool, not NaN or infinity."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def read_json_dict(path: Path) -> dict[str, Any]:
+    """A file Breeze wrote, or {} when it is missing, unreadable or not an object."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def save_link(link: dict[str, Any]) -> None:

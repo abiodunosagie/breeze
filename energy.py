@@ -8,7 +8,6 @@ total, so a reading missed while the Mac sleeps costs nothing. Kept privately, l
 
 from __future__ import annotations
 
-import json
 import math
 import re
 import time
@@ -16,9 +15,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from store import SAVE_EVERY_SECONDS, is_number, read_json_dict
+
 HOURS = 24
 DAYS_KEPT = 62
-SAVE_EVERY_SECONDS = 300
 
 
 class EnergyLog:
@@ -36,10 +36,7 @@ class EnergyLog:
         self._low_once: float | None = None  # a lower total, waiting for a second one to confirm a reset
 
     def _load(self) -> dict[str, Any]:
-        try:
-            data = json.loads(self._path.read_text())
-        except (OSError, json.JSONDecodeError):
-            data = {}
+        data = read_json_dict(self._path)
 
         def spans(value: Any, key_shape: re.Pattern[str]) -> dict[str, list[float]]:
             if not isinstance(value, dict):
@@ -47,11 +44,10 @@ class EnergyLog:
             good = {}
             for k, v in value.items():
                 if (isinstance(k, str) and key_shape.fullmatch(k) and isinstance(v, list) and len(v) in (2, 3)
-                        and all(isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) for x in v)):
+                        and all(is_number(x) for x in v)):
                     good[k] = [float(v[0]), float(v[1]), float(v[2]) if len(v) == 3 else 0.0]
             return good
 
-        data = data if isinstance(data, dict) else {}
         return {"days": spans(data.get("days"), re.compile(r"\d{4}-\d{2}-\d{2}")),
                 "hours": spans(data.get("hours"), re.compile(r"\d{9,11}"))}
 

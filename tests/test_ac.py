@@ -60,6 +60,9 @@ class FakeAC:
         await asyncio.sleep(0)
         self.applied.append((self.target_temperature, self.operational_mode))
 
+    async def refresh(self):
+        await asyncio.sleep(0)
+
     async def start_self_clean(self):
         await asyncio.sleep(0)
         self.cleans_started += 1

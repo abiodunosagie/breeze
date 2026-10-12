@@ -9,17 +9,20 @@ runs, by ACSession.change, because the AC may be away when the user saves.
 
 from __future__ import annotations
 
-import json
 import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
+from store import read_json_dict
+
 GRACE_SECONDS = 15 * 60
 # Missed by more than this, the time is skipped quietly: old news is no use to anyone.
 TELL_MISSED_WITHIN_SECONDS = 12 * 3600
 MAX_SCHEDULES = 16
+# Shape only; the unit's own range is checked when the schedule runs.
+MIN_TARGET, MAX_TARGET = 10, 35
 ID_SHAPE = re.compile(r"[a-z0-9-]{1,32}")
 TIME_SHAPE = re.compile(r"([01]\d|2[0-3]):([0-5]\d)")
 NAME_SHAPE = re.compile(r"[a-z]{1,10}")
@@ -48,7 +51,7 @@ def check_entry(raw: Any) -> dict[str, Any]:
     if power:
         target = raw.get("target")
         if target is not None:
-            if not isinstance(target, (int, float)) or isinstance(target, bool) or not 10 <= target <= 35:
+            if not isinstance(target, (int, float)) or isinstance(target, bool) or not MIN_TARGET <= target <= MAX_TARGET:
                 raise ScheduleError("Choose a temperature the AC can be set to.")
             entry["target"] = float(target)
         for name in ("mode", "fan"):
@@ -96,12 +99,12 @@ class Timetable:
         self._load()
 
     def _load(self) -> None:
+        data = read_json_dict(self._path)
         try:
-            data = json.loads(self._path.read_text())
-            self.entries = check_entries(data.get("entries"))
-            done = data.get("done")
-        except (OSError, json.JSONDecodeError, AttributeError, ScheduleError):
+            self.entries = check_entries(data.get("entries", []))
+        except ScheduleError:
             return
+        done = data.get("done")
         ids = {e["id"] for e in self.entries}
         if isinstance(done, dict):
             self._done = {k: v for k, v in done.items() if k in ids and isinstance(v, str)}

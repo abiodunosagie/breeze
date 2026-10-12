@@ -2,21 +2,10 @@
 
 import asyncio
 import json
-from datetime import datetime
 
 import care
 from care import Care
-
-
-class Clock:
-    def __init__(self, when):
-        self.now = datetime.fromisoformat(when).timestamp()
-
-    def __call__(self):
-        return self.now
-
-    def advance(self, minutes):
-        self.now += minutes * 60
+from helpers import Clock
 
 
 def care_at(when, tmp_path, write=lambda path, data: None):
@@ -56,7 +45,7 @@ def test_filter_reminder_once_until_washed(tmp_path):
     assert run_for(c, clock, 5, power=True, wet=True, cleaning=False) == ["filter_due"]
     assert run_for(c, clock, 5, power=True, wet=True, cleaning=False) == []
     c.filter_cleaned()
-    assert c.filter_hours == 0 and not c.summary()["filter_wash_due"]
+    assert c.filter_hours == 0 and not c.filter_wash_due
 
 
 def test_clean_due_only_by_day_after_a_while_off(tmp_path):
@@ -73,14 +62,27 @@ def test_clean_due_only_by_day_after_a_while_off(tmp_path):
     assert not night.clean_due(True)
 
 
-def test_asked_once_then_waits(tmp_path):
+def test_one_try_a_day(tmp_path):
     c, clock = care_at("2026-10-12T10:00:00", tmp_path)
     c.clean_hours = care.CLEAN_AFTER_HOURS
     run_for(c, clock, 11, power=False, wet=True, cleaning=False)
-    c.asked_for_clean()
+    c.trying_clean()
+    run_for(c, clock, 120, power=False, wet=True, cleaning=False)
+    assert not c.clean_due(True)  # it never began, but not again today
+    clock.advance(22 * 60)  # tomorrow morning
+    run_for(c, clock, 11, power=False, wet=True, cleaning=False)
+    assert c.clean_due(True)
+
+
+def test_off_time_counts_afresh_after_an_unseen_gap(tmp_path):
+    c, clock = care_at("2026-10-12T08:00:00", tmp_path)
+    c.clean_hours = care.CLEAN_AFTER_HOURS
+    run_for(c, clock, 11, power=False, wet=True, cleaning=False)
+    clock.advance(10 * 60)  # the Mac slept; the user may have used the AC meanwhile
+    c.record(power=False, wet=True, cleaning=False)
     assert not c.clean_due(True)
-    run_for(c, clock, 31, power=False, wet=True, cleaning=False)
-    assert c.clean_due(True)  # the AC never began, so ask again
+    run_for(c, clock, 11, power=False, wet=True, cleaning=False)
+    assert c.clean_due(True)
 
 
 def test_finished_clean_resets_and_tells_only_when_breeze_started_it(tmp_path):
@@ -156,3 +158,19 @@ def test_session_starts_a_clean_only_when_off_and_idle(tmp_path):
         await asyncio.sleep(0.01)
         return started, dev.cleans_started
     assert asyncio.run(check()) == (1, 1)
+
+
+def test_no_clean_if_the_ac_was_switched_on_since_the_last_reading(tmp_path):
+    from test_ac import online_session
+
+    async def check():
+        session = online_session()
+        dev = session._device
+        dev.power_state = False
+
+        async def switched_on_by_hand():
+            dev.power_state = True
+        dev.refresh = switched_on_by_hand
+        await session._start_clean()
+        return dev.cleans_started, session.care._asked_at
+    assert asyncio.run(check()) == (0, None)

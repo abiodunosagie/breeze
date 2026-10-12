@@ -8,12 +8,12 @@ beside the unit's own Sleep mode, which does its own rising.
 
 from __future__ import annotations
 
-import json
-import math
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
+
+from store import is_number, read_json_dict
 
 LENGTHS = (360, 420, 480, 540)  # minutes
 ENDS = ("restore", "off")
@@ -32,15 +32,9 @@ class SleepCurve:
         self.state: dict[str, Any] | None = self._load()
 
     def _load(self) -> dict[str, Any] | None:
-        try:
-            data = json.loads(self._path.read_text())
-        except (OSError, json.JSONDecodeError):
-            return None
-        if not isinstance(data, dict):
-            return None
+        data = read_json_dict(self._path)
         started, start, minutes, end = (data.get(k) for k in ("started_at", "start_target", "minutes", "end"))
-        numbers = all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in (started, start))
-        if not numbers or minutes not in LENGTHS or end not in ENDS:
+        if not (is_number(started) and is_number(start)) or minutes not in LENGTHS or end not in ENDS:
             return None
         state = {"started_at": float(started), "start_target": float(start), "minutes": minutes, "end": end}
         # Ended while Breeze was not running: nothing to finish now.

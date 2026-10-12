@@ -6,14 +6,19 @@ struct ScheduleEditor: View {
     let ac: ACState
     var done: () -> Void
     @State private var entries: [ACSchedule] = []
+    /// Saved and waiting for the helper to send the list back; closes then. A refused list stays open.
+    @State private var saving = false
 
     private static let maxEntries = 16  // MAX_SCHEDULES in timetable.py
+    private static let graceMinutes = 15  // GRACE_SECONDS in timetable.py
     private static let dayLetters = ["M", "T", "W", "T", "F", "S", "S"]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Schedules").font(.headline)
-            if entries.isEmpty {
+            if ac.schedules == nil {
+                Text("Breeze could not read the saved schedules.").foregroundStyle(.secondary)
+            } else if entries.isEmpty {
                 Text("No schedules yet.").foregroundStyle(.secondary)
             }
             ForEach($entries) { $entry in
@@ -24,19 +29,32 @@ struct ScheduleEditor: View {
                 Button("Add Schedule", action: add).disabled(entries.count >= Self.maxEntries)
                 Spacer()
                 Button("Cancel", action: done)
-                Button("Save") {
+                Button(saving ? "Saving…" : "Save") {
+                    // As the helper keeps them, so the list it sends back compares equal.
+                    entries = entries.map { entry in
+                        var e = entry
+                        if !e.power { e.target = nil; e.mode = nil; e.fan = nil }
+                        return e
+                    }
+                    saving = true
                     client.saveSchedules(entries)
-                    done()
                 }
                 .keyboardShortcut(.defaultAction)
+                .disabled(ac.schedules == nil || saving)
             }
-            Text("Runs while Breeze is running and the air conditioner is reachable, up to 15 minutes late.")
+            Text("Runs while Breeze is running and the air conditioner is reachable, up to \(Self.graceMinutes) minutes late.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(14)
         .frame(width: 360)
-        .onAppear { entries = ac.schedules }
+        .onAppear { entries = ac.schedules ?? [] }
+        .onChange(of: ac.schedules) { _, saved in
+            if saving && saved == entries { done() }
+        }
+        .onChange(of: client.toast) { _, toast in
+            if saving && toast != nil { saving = false }  // refused: the reason shows, the edits stay
+        }
     }
 
     private func row(_ entry: Binding<ACSchedule>) -> some View {

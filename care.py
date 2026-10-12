@@ -7,19 +7,18 @@ for the night never credits the AC with hours nobody saw. Kept privately, like t
 
 from __future__ import annotations
 
-import json
-import math
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
+
+from store import SAVE_EVERY_SECONDS, is_number, read_json_dict
 
 # A self clean after this many wet hours, when the user turned automatic cleaning on.
 CLEAN_AFTER_HOURS = 40.0
 # Breeze's own reminder to wash the filter, in the same wet hours.
 FILTER_AFTER_HOURS = 150.0
 MAX_GAP_SECONDS = 120.0
-SAVE_EVERY_SECONDS = 300.0
 # A clean shorter than this was stopped early and does not count as done.
 CLEAN_COUNTS_AFTER_MINUTES = 10
 # Automatic cleans start only in the day, so the fan never wakes anyone, and only once the AC
@@ -27,8 +26,8 @@ CLEAN_COUNTS_AFTER_MINUTES = 10
 CLEAN_FROM_HOUR = 8
 CLEAN_UNTIL_HOUR = 22
 OFF_FOR_SECONDS = 10 * 60
-# After asking for a clean that never began, wait this long before asking again.
-RETRY_AFTER_SECONDS = 30 * 60
+# A clean seen starting this soon after Breeze asked is Breeze's (it tells the user when done).
+BREEZE_CLEAN_WITHIN_SECONDS = 30 * 60
 
 
 class Care:
@@ -42,30 +41,29 @@ class Care:
         self.clean_hours: float = data["clean_hours"]
         self.filter_hours: float = data["filter_hours"]
         self.filter_told: bool = data["filter_told"]
+        # One automatic try a day: a clean that is cut short or never begins is not retried all day.
+        self._tried_on: str | None = data["tried_on"]
         self._off_since: float | None = None
         self._asked_at: float | None = None  # when Breeze last asked for a clean
         self._clean_started: float | None = None  # wall clock a clean was first seen running
         self._breeze_cleaning = False  # the running clean is one Breeze started
 
     def _load(self) -> dict[str, Any]:
-        try:
-            data = json.loads(self._path.read_text())
-        except (OSError, json.JSONDecodeError):
-            data = {}
-        data = data if isinstance(data, dict) else {}
+        data = read_json_dict(self._path)
 
         def hours(value: Any) -> float:
-            ok = isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
-            return float(value) if ok else 0.0
+            return float(value) if is_number(value) and value >= 0 else 0.0
 
+        tried = data.get("tried_on")
         return {"clean_hours": hours(data.get("clean_hours")), "filter_hours": hours(data.get("filter_hours")),
-                "filter_told": data.get("filter_told") is True}
+                "filter_told": data.get("filter_told") is True, "tried_on": tried if isinstance(tried, str) else None}
 
     def save(self) -> None:
         self._saved_at = self._clock()
         try:
             self._write(self._path, {"clean_hours": round(self.clean_hours, 3),
-                                     "filter_hours": round(self.filter_hours, 3), "filter_told": self.filter_told})
+                                     "filter_hours": round(self.filter_hours, 3), "filter_told": self.filter_told,
+                                     "tried_on": self._tried_on})
         except OSError:
             pass  # the next save tries again
 
@@ -81,7 +79,10 @@ class Care:
             self.clean_hours += gap
             self.filter_hours += gap
         self._last_tick = now
-        self._off_since = None if power else (self._off_since if self._off_since is not None else now)
+        if power:
+            self._off_since = None
+        elif self._off_since is None or not watched:
+            self._off_since = now  # unseen meanwhile, it may have been on: count the off time afresh
         news = self._follow_clean(cleaning, now, watched)
         if news is None and self.filter_hours >= FILTER_AFTER_HOURS and not self.filter_told:
             self.filter_told = True
@@ -94,7 +95,7 @@ class Care:
         if cleaning:
             if self._clean_started is None:
                 self._clean_started = now
-                self._breeze_cleaning = self._asked_at is not None and now - self._asked_at < RETRY_AFTER_SECONDS
+                self._breeze_cleaning = self._asked_at is not None and now - self._asked_at < BREEZE_CLEAN_WITHIN_SECONDS
             return None
         if self._clean_started is None:
             return None
@@ -115,11 +116,20 @@ class Care:
         return (auto_clean and self.clean_hours >= CLEAN_AFTER_HOURS
                 and CLEAN_FROM_HOUR <= hour < CLEAN_UNTIL_HOUR
                 and self._off_since is not None and now - self._off_since >= OFF_FOR_SECONDS
-                and self._clean_started is None
-                and (self._asked_at is None or now - self._asked_at >= RETRY_AFTER_SECONDS))
+                and self._clean_started is None and self._tried_on != self._today(now))
+
+    def trying_clean(self) -> None:
+        """Breeze is about to ask: today's try is used, whatever comes of it."""
+        self._tried_on = self._today(self._clock())
+        self.save()
 
     def asked_for_clean(self) -> None:
+        """The AC took the request."""
         self._asked_at = self._clock()
+
+    @staticmethod
+    def _today(now: float) -> str:
+        return datetime.fromtimestamp(now).strftime("%Y-%m-%d")
 
     def filter_cleaned(self) -> None:
         self.filter_hours = 0.0
@@ -128,5 +138,8 @@ class Care:
 
     def summary(self) -> dict[str, Any]:
         return {"clean_hours": round(self.clean_hours, 1), "filter_hours": round(self.filter_hours, 1),
-                "clean_after_hours": CLEAN_AFTER_HOURS, "filter_after_hours": FILTER_AFTER_HOURS,
-                "filter_wash_due": self.filter_hours >= FILTER_AFTER_HOURS}
+                "clean_after_hours": CLEAN_AFTER_HOURS, "filter_after_hours": FILTER_AFTER_HOURS}
+
+    @property
+    def filter_wash_due(self) -> bool:
+        return self.filter_hours >= FILTER_AFTER_HOURS

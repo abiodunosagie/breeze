@@ -60,6 +60,8 @@ ANGLES = {"1": Angle.POS_1, "2": Angle.POS_2, "3": Angle.POS_3, "4": Angle.POS_4
 HOLDING_SHARE = 0.25
 # At or above this share, the compressor is working hard: the readings the health check trusts.
 HARD_SHARE = 0.5
+# Modes Breeze's sleep curve runs in.
+CURVE_MODES = ("cool", "auto")
 # Starting guess for the compressor's top speed; raised as faster speeds are seen.
 COMPRESSOR_HZ_GUESS = 60
 # The Timer button: turn the AC off after this many minutes.
@@ -135,6 +137,7 @@ class ACSession:
         self._cleaner: asyncio.Task[None] | None = None
         self.timetable = Timetable(SCHEDULE_FILE, write_private)
         self.curve = SleepCurve(SLEEP_FILE, write_private)
+        self._curve_sent: float | None = None  # the last setting the curve asked for
         self.health = Health(HEALTH_FILE, write_private)
         # While drying the coil: when it started and the mode to go back to, for next time.
         self._drying: dict[str, Any] | None = None
@@ -184,11 +187,12 @@ class ACSession:
             "compressor_hz": dev.compressor_frequency,
             "coil": dev.indoor_coil_temperature,
             "fault": dev.error_code or None,
-            "filter_due": bool(dev.filter_alert),
+            # The unit's own filter alert, or Breeze's count of hours since the last wash.
+            "filter_due": bool(dev.filter_alert) or self.care.filter_wash_due,
             "drying_minutes_left": self._drying_minutes_left(),
             **self.energy.summary(),
             **self.care.summary(),
-            **self.health.summary(),
+            "health": self.health.summary(),
         }
         # Changes on their way show already, so the app never snaps back meanwhile.
         for waiting in (self._inflight, self._pending):
@@ -396,6 +400,10 @@ class ACSession:
         if self._last_running is None:
             raise ACError("Breeze has not seen the air conditioner running yet.")
         known = {k: v for k, v in self._last_running.items() if v is not None}
+        if self.curve.active:
+            # The curve sets the temperature itself on the next reading, and the mode is one it runs in.
+            known.pop("target", None)
+            known.pop("mode", None)
         self.change({"power": True, **known})
 
     async def _rediscover(self) -> None:
@@ -419,22 +427,26 @@ class ACSession:
     # ------------------------------------------------------------ self clean and filter
 
     def _look_after(self, dev: Any) -> None:
-        """Count wet hours, tell the user about a finished clean or a filter due, start a clean when due."""
-        wet = _name(MODES, dev.operational_mode) in WET_MODES
-        news = self.care.record(bool(dev.power_state), wet, bool(dev.self_clean_active))
+        """Count wet hours, tell the user about a finished clean or a filter due, start a clean when due,
+        and follow the cooling gap."""
+        mode = _name(MODES, dev.operational_mode)
+        news = self.care.record(bool(dev.power_state), mode in WET_MODES, bool(dev.self_clean_active))
         if news == "clean_done":
             self._send_event("clean_done", "The self clean finished. The coil is clean and dry.")
         elif news == "filter_due":
             hours = round(self.care.filter_hours)
             self._send_event("filter", f"Time to wash the filter: about {hours} hours of cooling since the last wash.")
+        self._check_health(dev, mode)
+        if self._clean_allowed(dev) and self.care.clean_due(self.settings["auto_clean"]):
+            self.care.trying_clean()
+            self._cleaner = asyncio.get_running_loop().create_task(self._start_clean())
+
+    def _check_health(self, dev: Any, mode: str | None) -> None:
         # Hard cooling only: the compressor at half its top speed or more, not drying the coil.
-        hard = (_name(MODES, dev.operational_mode) == "cool" and self._phase(dev) == "working" and self._drying is None
+        hard = (mode == "cool" and self._phase(dev) == "working" and self._drying is None
                 and (dev.compressor_frequency or 0) >= HARD_SHARE * self._top_hz)
         if self.health.record(bool(dev.power_state), hard, dev.indoor_temperature, dev.indoor_coil_temperature):
             self._send_event("health", self.health.message_for_low())
-        if self._clean_allowed(dev) and self.care.clean_due(self.settings["auto_clean"]):
-            self.care.asked_for_clean()
-            self._cleaner = asyncio.get_running_loop().create_task(self._start_clean())
 
     def _clean_allowed(self, dev: Any) -> bool:
         """Only with the AC off and idle: nothing queued or being sent, no drying, no timer waiting."""
@@ -444,10 +456,15 @@ class ACSession:
         try:
             async with self._lock:
                 dev = self._device
-                # Checked again under the lock: a change may have been queued meanwhile.
-                if dev is None or not self._off_and_idle(dev):
+                if dev is None:
+                    return
+                # Read again first: the last reading may be 20 s old, and someone may have
+                # switched the AC on by hand since, or queued a change.
+                await dev.refresh()
+                if not dev.online or not self._off_and_idle(dev):
                     return
                 await dev.start_self_clean()
+            self.care.asked_for_clean()
         except Exception as exc:
             log.info("AC self clean start failed: %s", type(exc).__name__)
             return
@@ -473,7 +490,14 @@ class ACSession:
 
     def _run_schedules(self) -> None:
         run, missed = self.timetable.due()
+        dev = self._device
         for entry in run:
+            if dev.self_clean_active:
+                # Any power press would stop the clean halfway.
+                self._tell(f"The {entry['time']} schedule did not run: the air conditioner was cleaning itself.")
+                continue
+            if not entry["power"] and not dev.power_state and self._drying is None and not self._pending.get("power"):
+                continue  # off already
             try:
                 self.change(changes_for(entry))
             except ACError as exc:
@@ -494,12 +518,14 @@ class ACSession:
         if dev is None or self.status != "online" or not dev.power_state:
             raise ACError("Turn the air conditioner on first.")
         mode = self._pending.get("mode") or _name(MODES, dev.operational_mode)
-        if mode not in ("cool", "auto"):
+        if mode not in CURVE_MODES:
             raise ACError("The sleep curve works while cooling.")
         if dev.sleep or self._pending.get("sleep"):
             raise ACError("Turn the unit's own Sleep off first.")
-        start = self._pending.get("target", dev.target_temperature)
+        # A new length for a curve already running keeps its starting point, not the raised setting.
+        start = self.curve.state["start_target"] if self.curve.active else self._pending.get("target", dev.target_temperature)
         self.curve.start(start, minutes, self.settings["sleep_curve_end"])
+        self._curve_sent = start
         self._on_change()
 
     def _stop_curve(self, why: str = "The sleep curve stopped.") -> None:
@@ -510,13 +536,19 @@ class ACSession:
         """Keep the setting where the curve wants it; stop if the AC was turned off or to its own Sleep."""
         if not self.curve.active:
             return
-        if not dev.power_state or dev.sleep:
-            self._stop_curve()
+        if not dev.power_state or dev.sleep or _name(MODES, dev.operational_mode) not in CURVE_MODES:
+            self._stop_curve()  # switched off, to Sleep or out of cooling another way
+            return
+        waiting = "target" in self._pending or "target" in self._inflight
+        if (not waiting and self._curve_sent is not None
+                and dev.target_temperature not in (self._curve_sent, self.curve.wanted(dev.max_target_temperature))):
+            self._stop_curve("The sleep curve stopped: the temperature was changed on the unit.")
             return
         if self.curve.finished():
             state = self.curve.state
             if self.curve.ended_unseen():
-                self._stop_curve("The sleep curve ended while Breeze was asleep. The setting was left as it was.")
+                self._stop_curve("The sleep curve ended while Breeze could not see the air conditioner. "
+                                 "The setting was left as it was.")
                 return
             self.curve.stop()
             ending = {"power": False} if state["end"] == "off" else {"target": state["start_target"]}
@@ -528,8 +560,9 @@ class ACSession:
             self._tell("Good morning. The sleep curve has ended.")
             return
         wanted = self.curve.wanted(dev.max_target_temperature)
-        if dev.target_temperature != wanted and "target" not in self._pending and "target" not in self._inflight:
+        if dev.target_temperature != wanted and not waiting:
             self._pending["target"] = wanted
+            self._curve_sent = wanted
             self._kick()
 
     # ------------------------------------------------------------ drying the coil

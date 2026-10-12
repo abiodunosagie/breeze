@@ -48,10 +48,10 @@ struct ACState: Decodable, Equatable {
     var filterHours: Double = 0
     var cleanAfterHours: Double = 40
     var filterAfterHours: Double = 150
-    var filterWashDue = false
     var autoClean = false
     /// The user's schedules, and Breeze's sleep curve while it runs.
-    var schedules: [ACSchedule] = []
+    /// nil when the list could not be read: the editor then refuses to save over it.
+    var schedules: [ACSchedule]?
     var sleepCurve: SleepCurveInfo?
     var sleepCurveChoices: [Int] = []
     var sleepCurveEnd = "restore"
@@ -110,7 +110,6 @@ struct ACState: Decodable, Equatable {
         case filterHours = "filter_hours"
         case cleanAfterHours = "clean_after_hours"
         case filterAfterHours = "filter_after_hours"
-        case filterWashDue = "filter_wash_due"
         case schedules
         case sleepCurve = "sleep_curve"
         case sleepCurveChoices = "sleep_curve_choices"
@@ -174,8 +173,7 @@ struct ACState: Decodable, Equatable {
         filterHours = value(.filterHours, 0.0)
         cleanAfterHours = value(.cleanAfterHours, 40.0)
         filterAfterHours = value(.filterAfterHours, 150.0)
-        filterWashDue = value(.filterWashDue, false)
-        schedules = value(.schedules, [ACSchedule]())
+        schedules = c.contains(.schedules) ? try? c.decode([ACSchedule].self, forKey: .schedules) : []
         sleepCurve = try? c.decode(SleepCurveInfo.self, forKey: .sleepCurve)
         sleepCurveChoices = value(.sleepCurveChoices, [Int]())
         health = try? c.decode(HealthInfo.self, forKey: .health)
@@ -257,6 +255,8 @@ struct HealthInfo: Decodable, Equatable {
     var usual: Double?
     /// learning, good or low.
     var state: String
+    /// What to tell the user while low, from the helper.
+    var message: String?
 }
 
 struct SleepCurveInfo: Decodable, Equatable {

@@ -64,7 +64,8 @@ struct EnergyLine: View {
                                                                     set: { client.setAC(["breeze_away": $0]) }))
             }
             Divider()
-            Button(ac.schedules.isEmpty ? "Schedules…" : "Schedules (\(ac.schedules.filter(\.enabled).count) on)…") {
+            let onCount = ac.schedules?.filter(\.enabled).count ?? 0
+            Button(onCount == 0 ? "Schedules…" : "Schedules (\(onCount) on)…") {
                 editingSchedules = true
             }
             Divider()

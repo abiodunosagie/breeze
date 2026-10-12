@@ -21,7 +21,11 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     /// Asks once; macOS remembers the answer.
     func askPermission() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
+            // Only whether it worked, never what any notification said.
+            NSLog("Breeze notifications allowed: %@, error: %@", granted ? "yes" : "no",
+                  error.map { String(describing: type(of: $0)) + " " + String((($0 as NSError).code)) } ?? "none")
+        }
     }
 
     func post(kind: String, text: String) {
