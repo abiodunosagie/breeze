@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 import ac
-import store
 from ac import FANS, MODES, SWINGS, ACError, ACSession
 
 
@@ -60,14 +59,6 @@ class FakeAC:
         self.applied.append((self.target_temperature, self.operational_mode))
 
 
-def private_dir(monkeypatch, folder):
-    """Point every Breeze file at a test folder, in both modules that name them."""
-    for module in (ac, store):
-        monkeypatch.setattr(module, "CONFIG_DIR", folder)
-        monkeypatch.setattr(module, "AC_FILE", folder / "ac.json")
-        monkeypatch.setattr(module, "SETTINGS_FILE", folder / "settings.json")
-
-
 def online_session(device=None):
     session = ACSession(on_change=lambda: None)
     session.settings = dict(ac.DEFAULT_SETTINGS)  # never the owner's real choices
@@ -87,7 +78,6 @@ def test_message_lists_only_what_the_unit_has():
 
 
 def test_unlinked_and_offline_send_status_only(monkeypatch, tmp_path):
-    private_dir(monkeypatch, tmp_path)
     assert ac.load_link() is None
     assert ACSession(on_change=lambda: None).message() == {"type": "ac", "status": "unlinked", "notice": "", "notice_id": 0,
                                                             "event": None, "event_id": 0}
@@ -228,7 +218,6 @@ def test_a_clean_started_elsewhere_drops_queued_changes():
 
 def test_linking_while_running_is_picked_up(tmp_path, monkeypatch):
     async def check():
-        private_dir(monkeypatch, tmp_path)
         session = ACSession(on_change=lambda: None, make_device=lambda **_: FakeAC())
         assert session.status == "unlinked"
         ac.save_link({"ip": "192.0.2.9", "port": 6444, "id": 1, "token": "aa", "key": "bb"})
@@ -263,11 +252,10 @@ def test_cleaning_blocks_everything_but_power():
     assert asyncio.run(check()) is True
 
 
-def test_save_link_is_private_and_whole(tmp_path, monkeypatch):
+def test_save_link_is_private_and_whole(private_files):
     import os
-    folder = tmp_path / "breeze"
+    folder = private_files
     folder.mkdir(mode=0o755)
-    private_dir(monkeypatch, folder)
     link = {"ip": "192.0.2.9", "port": 6444, "id": 1, "token": "aa", "key": "bb"}
     ac.save_link(link)
     assert ac.load_link() == link
@@ -305,7 +293,6 @@ def test_fault_and_filter_are_reported():
 
 
 def drying_session(tmp_path, monkeypatch):
-    private_dir(monkeypatch, tmp_path)
     session = online_session()
 
     async def refresh():
