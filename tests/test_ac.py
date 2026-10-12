@@ -1,10 +1,12 @@
 """The air conditioner session: what the Mac app sees, what it may change, and the change queue."""
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
 import ac
+import store
 from ac import FANS, MODES, SWINGS, ACError, ACSession
 
 
@@ -58,10 +60,18 @@ class FakeAC:
         self.applied.append((self.target_temperature, self.operational_mode))
 
 
+def private_dir(monkeypatch, folder):
+    """Point every Breeze file at a test folder, in both modules that name them."""
+    for module in (ac, store):
+        monkeypatch.setattr(module, "CONFIG_DIR", folder)
+        monkeypatch.setattr(module, "AC_FILE", folder / "ac.json")
+        monkeypatch.setattr(module, "SETTINGS_FILE", folder / "settings.json")
+
+
 def online_session(device=None):
     session = ACSession(on_change=lambda: None)
     session.settings = dict(ac.DEFAULT_SETTINGS)  # never the owner's real choices
-    session.energy = ac.EnergyLog(ac.Path("/nonexistent/energy.json"), lambda path, data: None)
+    session.energy = ac.EnergyLog(Path("/nonexistent/energy.json"), lambda path, data: None)
     session._device = device or FakeAC()
     session.status = "online"
     return session
@@ -77,9 +87,10 @@ def test_message_lists_only_what_the_unit_has():
 
 
 def test_unlinked_and_offline_send_status_only(monkeypatch, tmp_path):
-    monkeypatch.setattr(ac, "AC_FILE", tmp_path / "missing.json")
+    private_dir(monkeypatch, tmp_path)
     assert ac.load_link() is None
-    assert ACSession(on_change=lambda: None).message() == {"type": "ac", "status": "unlinked", "notice": "", "notice_id": 0}
+    assert ACSession(on_change=lambda: None).message() == {"type": "ac", "status": "unlinked", "notice": "", "notice_id": 0,
+                                                            "event": None, "event_id": 0}
 
 
 def test_changes_are_checked():
@@ -217,8 +228,7 @@ def test_a_clean_started_elsewhere_drops_queued_changes():
 
 def test_linking_while_running_is_picked_up(tmp_path, monkeypatch):
     async def check():
-        monkeypatch.setattr(ac, "AC_FILE", tmp_path / "ac.json")
-        monkeypatch.setattr(ac, "CONFIG_DIR", tmp_path)
+        private_dir(monkeypatch, tmp_path)
         session = ACSession(on_change=lambda: None, make_device=lambda **_: FakeAC())
         assert session.status == "unlinked"
         ac.save_link({"ip": "192.0.2.9", "port": 6444, "id": 1, "token": "aa", "key": "bb"})
@@ -257,8 +267,7 @@ def test_save_link_is_private_and_whole(tmp_path, monkeypatch):
     import os
     folder = tmp_path / "breeze"
     folder.mkdir(mode=0o755)
-    monkeypatch.setattr(ac, "CONFIG_DIR", folder)
-    monkeypatch.setattr(ac, "AC_FILE", folder / "ac.json")
+    private_dir(monkeypatch, folder)
     link = {"ip": "192.0.2.9", "port": 6444, "id": 1, "token": "aa", "key": "bb"}
     ac.save_link(link)
     assert ac.load_link() == link
@@ -296,8 +305,7 @@ def test_fault_and_filter_are_reported():
 
 
 def drying_session(tmp_path, monkeypatch):
-    monkeypatch.setattr(ac, "CONFIG_DIR", tmp_path)
-    monkeypatch.setattr(ac, "SETTINGS_FILE", tmp_path / "settings.json")
+    private_dir(monkeypatch, tmp_path)
     session = online_session()
 
     async def refresh():
@@ -380,3 +388,127 @@ def test_comfort_controls():
     m = asyncio.run(check())
     assert (m["purifier"], m["breeze_away"], m["louver_v"], m["fan_percent"]) == (True, True, "2", 35)
     assert online_session().message()["fan_percent"] is None  # "max" is not an exact speed
+
+
+def outage_session(monkeypatch, restore=False):
+    session = online_session()
+
+    async def refresh():
+        pass
+
+    session._device.refresh = refresh
+    session.settings["restore_after_outage"] = restore
+    return session
+
+
+async def go_through_outage(session, minutes, comes_back_on=False):
+    await session._poll_once()  # seen running, settings remembered
+    session._device.online = False
+    await session._poll_once()
+    session._unreachable_since -= minutes * 60  # as if that long passed with the Mac awake
+    session._device.online, session._device.power_state = True, comes_back_on
+    await session._poll_once()
+    if session._flusher:
+        await session._flusher
+
+
+def test_power_cut_asks_before_switching_back_on(monkeypatch):
+    async def check():
+        session = outage_session(monkeypatch)
+        await go_through_outage(session, 12)
+        return session.message()["event"], session._device.power_state
+    event, power = asyncio.run(check())
+    assert event["kind"] == "power_back" and "12 min" in event["text"] and power is False
+
+
+def test_power_cut_restores_when_chosen(monkeypatch):
+    async def check():
+        session = outage_session(monkeypatch, restore=True)
+        session._device.target_temperature = 22.0
+        await go_through_outage(session, 5)
+        return session.message()["event"]["kind"], session._device.power_state, session._device.target_temperature
+    assert asyncio.run(check()) == ("restored", True, 22.0)
+
+
+def test_short_drop_or_still_on_is_not_a_power_cut(monkeypatch):
+    async def check():
+        short = outage_session(monkeypatch)
+        await go_through_outage(short, 0.5)
+        still_on = outage_session(monkeypatch)
+        await go_through_outage(still_on, 30, comes_back_on=True)  # router restart: AC kept running
+        return short.message()["event"], still_on.message()["event"]
+    assert asyncio.run(check()) == (None, None)
+
+
+def test_restore_needs_a_seen_running_state():
+    session = online_session()
+    with pytest.raises(ACError):
+        session.restore()
+
+
+def test_any_press_while_drying_puts_mode_and_fan_back(tmp_path, monkeypatch):
+    async def check():
+        session = drying_session(tmp_path, monkeypatch)
+        dev = session._device
+        dev.fan_speed = FANS["high"]
+        session.change({"power": False})
+        await session._flusher
+        assert dev.operational_mode == MODES["fan"]
+        session.change({"target": 18})  # the user takes over
+        await session._flusher
+        return dev, session._drying
+    dev, drying = asyncio.run(check())
+    assert drying is None and dev.operational_mode == MODES["cool"] and dev.fan_speed == FANS["high"]
+    assert dev.target_temperature == 18.0 and dev.power_state is True
+
+
+def test_a_refused_press_keeps_drying(tmp_path, monkeypatch):
+    async def check():
+        session = drying_session(tmp_path, monkeypatch)
+        session.change({"power": False})
+        await session._flusher
+        with pytest.raises(ACError):
+            session.change({"target": 99})
+        return session._drying is not None
+    assert asyncio.run(check())
+
+
+def test_drying_puts_an_exact_fan_speed_back(tmp_path, monkeypatch):
+    async def check():
+        session = drying_session(tmp_path, monkeypatch)
+        dev = session._device
+        dev.fan_speed = 35  # an exact speed
+        session.change({"power": False})
+        await session._flusher
+        dev.indoor_coil_temperature = 25.0
+        await session._poll_once()
+        await session._flusher
+        return dev.fan_speed, dev.power_state
+    assert asyncio.run(check()) == (35, False)
+
+
+def test_timer_firing_while_drying_finishes_it(tmp_path, monkeypatch):
+    async def check():
+        session = drying_session(tmp_path, monkeypatch)
+        dev = session._device
+        session.change({"power": False})
+        await session._flusher
+        session._off_due = True
+        await session._poll_once()
+        await session._flusher
+        return dev.power_state, dev.operational_mode, session._drying
+    assert asyncio.run(check()) == (False, MODES["cool"], None)
+
+
+def test_drying_times_out(tmp_path, monkeypatch):
+    async def check():
+        session = drying_session(tmp_path, monkeypatch)
+        dev = session._device
+        session.change({"power": False})
+        await session._flusher
+        dev.indoor_coil_temperature = None  # no coil reading: only the time limit can end it
+        session._drying["since"] -= ac.DRY_MAX_MINUTES * 60
+        await session._poll_once()
+        await session._flusher
+        return dev.power_state
+    assert asyncio.run(check()) is False

@@ -90,8 +90,10 @@ private struct ACControls: View {
             header
             ACUnit(target: shown, ac: ac)
                 .frame(height: 150)
-                .overlay(alignment: .bottom) { banner }
-                .animation(.easeInOut(duration: 0.3), value: banner.key)
+                .overlay(alignment: .bottom) {
+                    if let notice { NoticeLine(notice: notice).transition(.opacity) }
+                }
+                .animation(.easeInOut(duration: 0.3), value: notice)
             VStack(alignment: .leading, spacing: 18) {
                 HStack(alignment: .center) {
                     VStack(alignment: .leading, spacing: 0) {
@@ -122,8 +124,8 @@ private struct ACControls: View {
                     .disabled(fanOnly)
                     .opacity(fanOnly ? 0.4 : 1)
                 tiles
-                extras
-                EnergyCard(client: client, ac: ac)
+                featureTiles
+                EnergyLine(client: client, ac: ac)
             }
             .opacity(ac.power ? 1 : 0.45)
             // Sleep mode: the panel dims for the night.
@@ -142,33 +144,31 @@ private struct ACControls: View {
         if ac.cleaning { return "Self-cleaning" + (ac.cleaningMinutes.map { ", \($0) min so far" } ?? "") }
         if ac.dryingMinutesLeft != nil { return "Drying the coil, then off" }
         switch ac.phase {
-        case "working": return ac.turbo ? "Turbo, cooling fast" : ac.mode == "dry" ? "Drying the air" : "Cooling the room"
+        case "working":
+            switch ac.mode {
+            case "heat": return ac.turbo ? "Turbo, heating fast" : "Warming the room"
+            case "dry": return "Drying the air"
+            default: return ac.turbo ? "Turbo, cooling fast" : "Cooling the room"
+            }
         case "holding": return "Room at temperature, resting"
         case "fan": return "Fan only, no cooling"
         default: return "Off"
         }
     }
 
-    /// One message on the unit, the most important first: fault, clean, filter.
-    private var banner: Banner {
+    /// One message on the unit, the most important first: fault, drying, clean, filter, light.
+    private var notice: Notice? {
         if let fault = ac.fault {
-            return Banner(key: "fault", text: "The AC reports fault \(fault). Check the unit.", symbol: "exclamationmark.triangle.fill",
-                          color: Color(red: 1, green: 0.45, blue: 0.4))
+            return Notice(text: "The AC reports fault \(fault). Check the unit.", symbol: "exclamationmark.triangle.fill",
+                          tint: ACTheme.warning)
         }
         if let minutes = ac.dryingMinutesLeft {
-            return Banner(key: "drying", text: "Drying the coil, up to \(minutes) min. Power stops it now.", symbol: "wind",
-                          color: ACTheme.accent)
+            return Notice(text: "Drying the coil, up to \(minutes) min. Power stops it now.", symbol: "wind", tint: ACTheme.accent)
         }
-        if ac.cleaning {
-            return Banner(key: "clean", text: "Self-cleaning. Press power to stop it.", symbol: "sparkles", color: ACTheme.eco)
-        }
-        if ac.filterDue {
-            return Banner(key: "filter", text: "Time to wash the filter.", symbol: "aqi.medium", color: Color(red: 1, green: 0.78, blue: 0.4))
-        }
-        if !ac.display && ac.power {
-            return Banner(key: "light", text: "The unit's light is off.", symbol: "lightbulb.slash", color: ACTheme.dim)
-        }
-        return Banner(key: "none", text: "", symbol: "", color: .clear)
+        if ac.cleaning { return Notice(text: "Self-cleaning. Power stops it.", symbol: "sparkles", tint: ACTheme.eco) }
+        if ac.filterDue { return Notice(text: "Time to wash the filter.", symbol: "aqi.medium", tint: ACTheme.caution) }
+        if !ac.display && ac.power { return Notice(text: "The unit's light is off.", symbol: "lightbulb.slash", tint: ACTheme.dim) }
+        return nil
     }
 
     private var header: some View {
@@ -229,7 +229,10 @@ private struct ACControls: View {
                 if ac.hasFanPercent {
                     Section("Exact speed") {
                         ForEach(Array(stride(from: 10, through: 100, by: 10)), id: \.self) { percent in
-                            checkButton("\(percent)%", on: ac.fanPercent == percent) { client.setAC(["fan_percent": percent]) }
+                            // 20, 40... equal the named speeds, which the unit reports by name.
+                            checkButton("\(percent)%", on: (ac.fanPercent ?? ACNames.fanPercents[ac.fan ?? ""]) == percent) {
+                                client.setAC(["fan_percent": percent])
+                            }
                         }
                     }
                 }
@@ -284,90 +287,56 @@ private struct ACControls: View {
         }
     }
 
-    private var extras: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                if ac.hasFlash {
-                    chip("Flash", symbol: "snowflake.circle", on: ac.flash) { client.setAC(["flash": !ac.flash]) }
-                        .help("Cool or Heat Flash: the fastest change for a few minutes")
-                }
-                if ac.hasTurbo {
-                    chip("Turbo", symbol: "bolt.fill", on: ac.turbo) { client.setAC(["turbo": !ac.turbo]) }
-                        .help("Cools as fast as it can for a while")
-                }
-                if ac.hasDisplay {
-                    chip("Light", symbol: ac.display ? "lightbulb.fill" : "lightbulb", on: ac.display) {
-                        client.toggleACDisplay()
-                    }
-                    .help("The light on the indoor unit, like the LED button")
-                }
-                Spacer(minLength: 0)
+    /// The second row: the unit's quick extras, in the same tiles as the first.
+    private var featureTiles: some View {
+        HStack(spacing: 8) {
+            toggleTile("Turbo", symbol: "bolt.fill", on: ac.turbo, shown: ac.hasTurbo, help: "Cools as fast as it can for a while") {
+                client.setAC(["turbo": !ac.turbo])
             }
-            if ac.hasPurifier || ac.hasBreezeAway {
-                HStack(spacing: 8) {
-                    if ac.hasPurifier {
-                        chip("Purify", symbol: "aqi.low", on: ac.purifier) { client.setAC(["purifier": !ac.purifier]) }
-                            .help("The unit's air purifier (ioniser)")
-                    }
-                    if ac.hasBreezeAway {
-                        chip("Breeze Away", symbol: "wind.circle", on: ac.breezeAway) { client.setAC(["breeze_away": !ac.breezeAway]) }
-                            .help("Steers the air away from you, so it does not blow straight on you")
-                    }
-                    Spacer(minLength: 0)
-                }
+            toggleTile("Flash", symbol: "snowflake.circle", on: ac.flash, shown: ac.hasFlash,
+                       help: "Cool or Heat Flash: the fastest change for a few minutes") {
+                client.setAC(["flash": !ac.flash])
             }
-            HStack {
-                timer
-                Spacer()
-                Toggle(isOn: Binding(get: { ac.dryCoil }, set: { client.setSetting("dry_coil", $0) })) {
-                    Text("Dry coil after use").font(.system(size: 12, weight: .semibold))
-                }
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-                .tint(ACTheme.accent)
-                .help("When you switch off after cooling, the fan runs alone until the coil is dry (up to 20 min), so mould and smells have no damp to grow in")
+            toggleTile("Purify", symbol: "aqi.low", on: ac.purifier, shown: ac.hasPurifier, help: "The unit's air purifier (ioniser)") {
+                client.setAC(["purifier": !ac.purifier])
             }
+            Menu {
+                ForEach(ac.timerChoices, id: \.self) { minutes in
+                    Button("Off in \(ACNames.duration(minutes))") { client.setOffTimer(minutes) }
+                }
+                if ac.offIn != nil {
+                    Divider()
+                    Button("Cancel Timer") { client.setOffTimer(nil) }
+                }
+            } label: {
+                ACTile(title: "Timer", value: ac.offIn.map { ACNames.duration($0) } ?? "Off", symbol: "timer",
+                       active: ac.offIn != nil, chevron: true)
+            }
+            .menuStyle(.button)
+            .buttonStyle(PressScale())
+            .menuIndicator(.hidden)
+            .help("Turn the air conditioner off later")
         }
     }
 
-    private var timer: some View {
-        Menu {
-            ForEach(ac.timerChoices, id: \.self) { minutes in
-                Button(ACNames.duration(minutes)) { client.setOffTimer(minutes) }
+    @ViewBuilder
+    private func toggleTile(_ title: String, symbol: String, on: Bool, shown: Bool, help: String,
+                            action: @escaping () -> Void) -> some View {
+        if shown {
+            Button(action: action) {
+                ACTile(title: title, value: on ? "On" : "Off", symbol: symbol, active: on, chevron: false)
             }
-            if ac.offIn != nil {
-                Divider()
-                Button("Cancel Timer") { client.setOffTimer(nil) }
-            }
-        } label: {
-            Label(ac.offIn.map { "Off in \(ACNames.duration($0))" } ?? "Timer", systemImage: "timer")
-                .font(.system(size: 12, weight: .semibold))
-                .padding(.horizontal, 12).padding(.vertical, 7)
-                .background(Capsule().fill(ac.offIn != nil ? ACTheme.accent.opacity(0.9) : ACTheme.tile))
-                .overlay(Capsule().strokeBorder(ac.offIn != nil ? Color.clear : ACTheme.tileEdge))
+            .buttonStyle(PressScale())
+            .help(help)
+        } else {
+            Color.clear.frame(width: ACTile.size.width, height: ACTile.size.height)
         }
-        .menuStyle(.button)
-        .buttonStyle(PressScale())
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("Turn the air conditioner off later")
-    }
-
-    private func chip(_ title: String, symbol: String, on: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: symbol)
-                .font(.system(size: 12, weight: .semibold))
-                .padding(.horizontal, 12).padding(.vertical, 7)
-                .background(Capsule().fill(on ? ACTheme.accent.opacity(0.9) : ACTheme.tile))
-                .overlay(Capsule().strokeBorder(on ? Color.clear : ACTheme.tileEdge))
-                .animation(.easeInOut(duration: 0.2), value: on)
-        }
-        .buttonStyle(PressScale())
     }
 }
 
 /// One square control: symbol, name and current value.
 private struct ACTile: View {
+    static let size = CGSize(width: 68, height: 82)
     let title: String
     let value: String
     let symbol: String
@@ -394,7 +363,7 @@ private struct ACTile: View {
                 .contentTransition(.opacity)
         }
         .padding(10)
-        .frame(width: 68, height: 82, alignment: .topLeading)
+        .frame(width: Self.size.width, height: Self.size.height, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(active ? ACTheme.accent.opacity(0.18) : ACTheme.tile))
         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(ACTheme.tileEdge))
         .animation(.easeInOut(duration: 0.2), value: value)
@@ -480,20 +449,22 @@ struct PressScale: ButtonStyle {
 }
 
 /// A short message shown on the drawn unit.
-private struct Banner: View {
-    let key: String
+struct Notice: Equatable {
     let text: String
     let symbol: String
-    let color: Color
+    let tint: Color
+}
+
+/// The message as one quiet line: only the symbol carries colour.
+private struct NoticeLine: View {
+    let notice: Notice
 
     var body: some View {
-        if !text.isEmpty {
-            Label(text, systemImage: symbol)
-                .font(.system(size: 12, weight: .semibold))
-                .padding(.horizontal, 12).padding(.vertical, 7)
-                .background(Capsule().fill(color.opacity(0.22)))
-                .foregroundStyle(color)
-                .transition(.opacity)
+        HStack(spacing: 6) {
+            Image(systemName: notice.symbol).foregroundStyle(notice.tint)
+            Text(notice.text).foregroundStyle(ACTheme.text.opacity(0.85))
         }
+        .font(.system(size: 12, weight: .medium))
+        .shadow(color: .black.opacity(0.5), radius: 6)
     }
 }

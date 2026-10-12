@@ -15,34 +15,16 @@ import asyncio
 import json
 import logging
 import math
-import os
-import tempfile
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 from msmart.device import AirConditioner
 from msmart.discover import Discover
 
 from energy import EnergyLog
+from store import (AC_FILE, CONFIG_DIR, DEFAULT_SETTINGS, DRY_DONE_WITHIN, DRY_MAX_MINUTES, ENERGY_FILE,  # noqa: F401
+                   OUTAGE_SECONDS, SETTINGS_FILE, WET_MODES, check_setting, load_settings, save_link, write_private)
 
-CONFIG_DIR = Path.home() / ".config" / "breeze"
-AC_FILE = CONFIG_DIR / "ac.json"
-SETTINGS_FILE = CONFIG_DIR / "settings.json"
-ENERGY_FILE = CONFIG_DIR / "energy.json"
-MAX_PRICE = 100_000.0  # naira per kWh; anything above is a typo
-# The user's choices, all off until turned on.
-DEFAULT_SETTINGS: dict[str, Any] = {
-    # On switching off after cooling, run the fan alone until the coil is dry: no damp coil for mould.
-    "dry_coil": False,
-    # Naira per kWh, set by the user. 0 means not set: kWh only, no money.
-    "price_per_kwh": 0.0,
-}
-# Drying ends when the coil is this close to the room temperature, or after DRY_MAX_MINUTES.
-DRY_DONE_WITHIN = 1.0
-DRY_MAX_MINUTES = 20
-# Modes that leave the coil cold and wet.
-WET_MODES = ("cool", "dry", "auto")
 POLL_SECONDS = 20.0
 # After this many silent polls in a row, look for the AC again (the router may have moved it).
 REDISCOVER_AFTER = 3
@@ -116,36 +98,6 @@ def load_link() -> dict[str, Any] | None:
     return data
 
 
-def write_private(path: Path, data: Any) -> None:
-    """Write JSON readable only by this user, all at once: a crash never leaves half a file."""
-    CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(CONFIG_DIR, 0o700)  # also tighten a folder that already existed
-    fd, temp = tempfile.mkstemp(dir=CONFIG_DIR, prefix=".tmp-", suffix=".json")  # created 0600
-    try:
-        with os.fdopen(fd, "w") as out:
-            json.dump(data, out)
-        os.replace(temp, path)
-    except BaseException:
-        os.unlink(temp)
-        raise
-
-
-def save_link(link: dict[str, Any]) -> None:
-    write_private(AC_FILE, link)
-
-
-def load_settings() -> dict[str, Any]:
-    """The user's choices, each falling back to its default when missing or of the wrong type."""
-    try:
-        data = json.loads(SETTINGS_FILE.read_text())
-    except (OSError, json.JSONDecodeError):
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
-    return {name: data[name] if isinstance(data.get(name), type(default)) else default
-            for name, default in DEFAULT_SETTINGS.items()}
-
-
 class ACSession:
     """status: unlinked | connecting | online | offline"""
 
@@ -173,6 +125,11 @@ class ACSession:
         self.energy = EnergyLog(ENERGY_FILE, write_private)
         # While drying the coil: when it started and the mode to go back to, for next time.
         self._drying: dict[str, Any] | None = None
+        # Power cuts. Loop time stops while the Mac sleeps, so a sleeping Mac never looks like one.
+        self._unreachable_since: float | None = None
+        self._last_running: dict[str, Any] | None = None  # settings the last time it was seen on
+        self.event: dict[str, Any] | None = None  # sent to the app once, for a notification
+        self.event_id = 0
         if self._link:
             self.status = "connecting"
 
@@ -181,7 +138,8 @@ class ACSession:
     def message(self) -> dict[str, Any]:
         """For the Mac app. Lists what this unit supports, so the app shows only those controls."""
         dev = self._device
-        base = {"type": "ac", "status": self.status, "notice": self.notice, "notice_id": self.notice_id}
+        base = {"type": "ac", "status": self.status, "notice": self.notice, "notice_id": self.notice_id,
+                "event": self.event, "event_id": self.event_id}
         if dev is None or self.status in ("unlinked", "connecting"):
             return base
         state = {
@@ -218,8 +176,13 @@ class ACSession:
             **self.energy.summary(),
         }
         # Changes on their way show already, so the app never snaps back meanwhile.
-        state.update(self._inflight)
-        state.update(self._pending)
+        for waiting in (self._inflight, self._pending):
+            state.update(waiting)
+            # A named speed and an exact one replace each other.
+            if "fan" in waiting:
+                state["fan_percent"] = None
+            if "fan_percent" in waiting:
+                state["fan"] = None
         return {
             **base, **state, "settings": dict(self.settings),
             "min": dev.min_target_temperature, "max": dev.max_target_temperature,
@@ -339,7 +302,14 @@ class ACSession:
             log.info("AC not reachable: %s", type(exc).__name__)
             online = False
         self._silent_polls = 0 if online else self._silent_polls + 1
+        now = asyncio.get_running_loop().time()
+        if not online and self._unreachable_since is None:
+            self._unreachable_since = now
         if online:
+            self.status = "online"  # before acting on the reading, so changes it makes are allowed
+            if self._unreachable_since is not None:
+                self._came_back(now - self._unreachable_since)
+            self._unreachable_since = None
             self._after_fresh_reading()
         self._set_status("online" if online else "offline")
         if self._silent_polls >= REDISCOVER_AFTER:
@@ -366,8 +336,43 @@ class ACSession:
                 self._turn_off()
         if self._drying:
             self._check_drying(dev)
+        self._remember_running()
         if self._pending and (self._flusher is None or self._flusher.done()):
             self._flusher = asyncio.get_running_loop().create_task(self._flush())
+
+    # ------------------------------------------------------------ power cuts
+
+    def _remember_running(self) -> None:
+        dev = self._device
+        if dev.power_state and not self._drying:
+            self._last_running = {"mode": _name(MODES, dev.operational_mode), "target": dev.target_temperature,
+                                  "fan": _name(FANS, dev.fan_speed), "swing": _name(SWINGS, dev.swing_mode)}
+
+    def _came_back(self, seconds: float) -> None:
+        """The AC answers again. If it was running and came back off, the power most likely went:
+        put it back on when the user chose that, otherwise ask."""
+        dev = self._device
+        if seconds < OUTAGE_SECONDS or self._last_running is None or dev.power_state or dev.self_clean_active:
+            return
+        minutes = max(1, round(seconds / 60))
+        if self.settings["restore_after_outage"]:
+            self.restore()
+            text = f"The power came back after about {minutes} min. Breeze switched the air conditioner back on."
+            self._send_event("restored", text)
+        else:
+            text = f"The power came back after about {minutes} min, and the air conditioner is off."
+            self._send_event("power_back", text)
+
+    def _send_event(self, kind: str, text: str) -> None:
+        self.event = {"kind": kind, "text": text}
+        self.event_id += 1
+
+    def restore(self) -> None:
+        """On again, with the settings it had when last seen running."""
+        if self._last_running is None:
+            raise ACError("Breeze has not seen the air conditioner running yet.")
+        known = {k: v for k, v in self._last_running.items() if v is not None}
+        self.change({"power": True, **known})
 
     async def _rediscover(self) -> None:
         """Find the AC by its id if its address changed, and keep the new address."""
@@ -395,9 +400,16 @@ class ACSession:
         """Switch off, the way Breeze does it: dry the coil first if the user asked for that.
         Only Breeze's own power offs come here (button, timer); an off from the hand remote never does."""
         dev = self._device
-        mode = _name(MODES, dev.operational_mode)
-        if self.settings["dry_coil"] and dev.power_state and mode in WET_MODES and not dev.self_clean_active:
-            self._drying = {"since": asyncio.get_running_loop().time(), "mode": mode}
+        if self._drying is not None:
+            self._finish_drying()  # already drying (the timer fired meanwhile): off now, as it was
+            return
+        mode = self._pending.get("mode") or _name(MODES, dev.operational_mode)
+        can_dry = Mode.FAN_ONLY in dev.supported_operation_modes and Fan.LOW in dev.supported_fan_speeds
+        if self.settings["dry_coil"] and can_dry and dev.power_state and mode in WET_MODES and not dev.self_clean_active:
+            # Keep the user's mode and fan speed (named or exact) to put back afterwards.
+            fan = {"fan_percent": dev.fan_speed} if type(dev.fan_speed) is int else {"fan": _name(FANS, dev.fan_speed)}
+            self._drying = {"since": asyncio.get_running_loop().time(), "restore": {"mode": mode, **fan}}
+            self._pending.pop("fan_percent", None)
             self._pending.update(mode="fan", fan="low")
             self._tell("Drying the coil before switching off.")
         else:
@@ -416,11 +428,26 @@ class ACSession:
             self._finish_drying()
 
     def _finish_drying(self) -> None:
-        """Off, with the mode put back so the next switch on cools again."""
+        """Off, with the mode and fan put back so the next switch on is as before."""
         assert self._drying is not None
-        self._pending.update(power=False, mode=self._drying["mode"])
+        self._pending.update(power=False, **self._restore_after_drying())
         self._drying = None
         self._tell("The coil is dry. The air conditioner is off.")
+
+    def _restore_after_drying(self) -> dict[str, Any]:
+        restore = {k: v for k, v in self._drying["restore"].items() if v is not None}
+        if "fan_percent" in restore:
+            self._pending.pop("fan", None)
+        return restore
+
+    def _cancel_drying(self, changes: dict[str, Any]) -> None:
+        """The user took over: drying stops and their mode and fan come back, unless they set them now."""
+        assert self._drying is not None
+        restore = self._restore_after_drying()
+        sets_fan = "fan" in changes or "fan_percent" in changes
+        self._pending.update({k: v for k, v in restore.items()
+                              if not (k == "mode" and "mode" in changes) and not (k in ("fan", "fan_percent") and sets_fan)})
+        self._drying = None
 
     def _drying_minutes_left(self) -> int | None:
         if self._drying is None:
@@ -429,13 +456,10 @@ class ACSession:
         return max(1, round(DRY_MAX_MINUTES - elapsed))
 
     def set_setting(self, name: object, value: object) -> None:
-        if name not in DEFAULT_SETTINGS:
-            raise ACError("Unknown setting.")
-        kind = type(DEFAULT_SETTINGS[name])
-        if kind is float and isinstance(value, int) and not isinstance(value, bool):
-            value = float(value)  # JSON sends 120 for 120.0
-        if not isinstance(value, kind) or (kind is float and not 0 <= value <= MAX_PRICE):
-            raise ACError("That value is not allowed.")
+        checked = check_setting(name, value)
+        if checked is None:
+            raise ACError("That setting or value is not allowed.")
+        value = checked
         self.settings[name] = value
         write_private(SETTINGS_FILE, self.settings)
         self._on_change()
@@ -449,13 +473,11 @@ class ACSession:
             raise ACError("The air conditioner is not reachable right now.")
         if not changes:
             raise ACError("Nothing to change.")
-        if self._drying is not None:
-            # Any press while drying takes over: power means off now, anything else ends the drying.
-            if changes.get("power") is False:
-                self._finish_drying()
-                self._kick()
-                return
-            self._drying = None
+        if self._drying is not None and changes.get("power") is False:
+            # Power while drying: off now.
+            self._finish_drying()
+            self._kick()
+            return
         if dev.self_clean_active and set(changes) != {"power"}:
             raise ACError(CLEANING)
         checked: dict[str, Any] = {}
@@ -482,11 +504,19 @@ class ACSession:
             else:
                 raise ACError("Unknown setting.")
             checked[name] = value
-        if checked.pop("power", None) is False:
-            self._turn_off()
-        elif "power" in changes:
-            checked["power"] = True
+        # Checked, so a refused request never ends the drying.
+        if self._drying is not None:
+            self._cancel_drying(checked)
+        power = checked.pop("power", None)
+        if "fan" in checked:
+            self._pending.pop("fan_percent", None)
+        if "fan_percent" in checked:
+            self._pending.pop("fan", None)
         self._pending.update(checked)
+        if power is False:
+            self._turn_off()  # after the other changes, so drying starts from them
+        elif power is True:
+            self._pending["power"] = True
         self._kick()
 
     def _kick(self) -> None:

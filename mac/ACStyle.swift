@@ -12,6 +12,8 @@ enum ACTheme {
     static let tile = Color.white.opacity(0.06)
     static let tileEdge = Color.white.opacity(0.09)
     static let track = Color.black.opacity(0.35)
+    static let warning = Color(red: 1, green: 0.45, blue: 0.4)
+    static let caution = Color(red: 1, green: 0.78, blue: 0.4)
 }
 
 /// Names and symbols for the values the helper sends.
@@ -23,6 +25,8 @@ enum ACNames {
     static let fans = ["auto": "Auto", "silent": "Silent", "low": "Low", "medium": "Medium", "high": "High", "max": "Max"]
     static let louverPositions = [("1", "Top"), ("2", "High"), ("3", "Middle"), ("4", "Low"), ("5", "Bottom")]
     static let louverSides = [("1", "Far left"), ("2", "Left"), ("3", "Centre"), ("4", "Right"), ("5", "Far right")]
+    /// The named fan speeds as the percent the unit uses for them.
+    static let fanPercents = ["silent": 20, "low": 40, "medium": 60, "high": 80, "max": 100]
     static let swings = ["off": "Fixed", "vertical": "Up/down", "horizontal": "Sideways", "both": "Both"]
 
     static func duration(_ minutes: Int) -> String {

@@ -49,6 +49,11 @@ struct ACState: Decodable, Equatable {
     var hourlyKWh: [Double] = []
     /// Naira per kWh, 0 when not set.
     var pricePerKWh: Double = 0
+    var restoreAfterOutage = false
+    /// Something to tell the user once, like the power coming back: kind and text.
+    var eventKind: String?
+    var eventText: String?
+    var eventId = 0
     /// Minutes left while the coil dries before switching off, or nil.
     var dryingMinutesLeft: Int?
     /// The user's choices kept by the helper.
@@ -91,6 +96,8 @@ struct ACState: Decodable, Equatable {
         case hourlyKWh = "hourly_kwh"
         case dryingMinutesLeft = "drying_minutes_left"
         case settings
+        case event
+        case eventId = "event_id"
         case min, max, modes, fans, swings
         case hasEco = "has_eco"
         case hasTurbo = "has_turbo"
@@ -141,6 +148,11 @@ struct ACState: Decodable, Equatable {
         let settings = (try? c.decode(Settings.self, forKey: .settings)) ?? Settings()
         dryCoil = settings.dryCoil
         pricePerKWh = settings.price
+        restoreAfterOutage = settings.restore
+        let event = try? c.decode([String: String].self, forKey: .event)
+        eventKind = event?["kind"]
+        eventText = event?["text"]
+        eventId = value(.eventId, 0)
         powerW = try? c.decode(Int.self, forKey: .powerW)
         todayKWh = value(.todayKWh, 0.0)
         monthKWh = value(.monthKWh, 0.0)
@@ -166,15 +178,18 @@ struct ACState: Decodable, Equatable {
     private struct Settings: Decodable {
         var dryCoil = false
         var price = 0.0
+        var restore = false
         enum CodingKeys: String, CodingKey {
             case dryCoil = "dry_coil"
             case price = "price_per_kwh"
+            case restore = "restore_after_outage"
         }
         init() {}
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             dryCoil = (try? c.decode(Bool.self, forKey: .dryCoil)) ?? false
             price = (try? c.decode(Double.self, forKey: .price)) ?? 0
+            restore = (try? c.decode(Bool.self, forKey: .restore)) ?? false
         }
     }
 }
@@ -193,6 +208,8 @@ final class ACClient: ObservableObject {
 
     /// Nil until the helper reports.
     @Published private(set) var ac: ACState?
+    /// Called once for each new event from the helper (kind, text), for a notification.
+    var onEvent: ((String, String) -> Void)?
     @Published private(set) var linkUp = false
     @Published var toast: String?
 
@@ -242,6 +259,10 @@ final class ACClient: ObservableObject {
         case "ac":
             if let next = try? JSONDecoder().decode(ACState.self, from: data) {
                 if !next.notice.isEmpty, next.noticeId != ac?.noticeId { show(next.notice) }
+                // The first message after connecting carries the last event; only newer ones notify.
+                if let old = ac, next.eventId != old.eventId, let kind = next.eventKind, let text = next.eventText {
+                    onEvent?(kind, text)
+                }
                 ac = next
             }
         case "error":
@@ -275,6 +296,8 @@ final class ACClient: ObservableObject {
     /// Change one or more settings, like ["target": 22] or ["power": false]. The helper checks each.
     func setAC(_ changes: [String: Any]) { send(["type": "ac_set", "changes": changes]) }
     func toggleACDisplay() { send(["type": "ac_display"]) }
+    /// On again with the settings it had when last seen running.
+    func restoreAC() { send(["type": "ac_restore"]) }
     /// One of the user's choices the helper keeps, like "dry_coil".
     func setSetting(_ name: String, _ value: Any) { send(["type": "ac_setting", "name": name, "value": value]) }
     /// Turn the AC off after `minutes`, or cancel the timer with nil.

@@ -1,5 +1,6 @@
 """Energy from the AC's running total: days, hours, resets, gaps and bad files."""
 
+import json
 from datetime import datetime
 
 from energy import EnergyLog
@@ -39,12 +40,25 @@ def test_a_new_day_starts_where_the_last_ended(tmp_path):
     assert s["today_kwh"] == 0.5 and s["month_kwh"] == 0.5
 
 
-def test_a_reset_counter_starts_afresh(tmp_path):
+def test_a_counter_reset_keeps_what_the_day_used(tmp_path):
     log, clock = log_at("2026-10-12T10:00:00", tmp_path)
     log.record(256.0, 200)
     clock.advance(10)
-    log.record(0.1, 200)  # the unit's counter went back to zero
-    assert log.summary()["today_kwh"] >= 0
+    log.record(256.5, 200)
+    log.record(0.1, 200)  # the unit's counter went back near zero...
+    assert log.summary()["today_kwh"] == 0.5  # ...one low reading is not trusted yet
+    log.record(0.2, 200)  # a second confirms the restart
+    assert log.summary()["today_kwh"] == 0.5
+    log.record(0.4, 200)
+    assert log.summary()["today_kwh"] == 0.7
+
+
+def test_one_glitched_reading_is_ignored(tmp_path):
+    log, clock = log_at("2026-10-12T10:00:00", tmp_path)
+    log.record(256.0, 200)
+    log.record(12.0, 200)  # a bad decode
+    log.record(256.3, 200)
+    assert log.summary()["today_kwh"] == 0.3
 
 
 def test_hourly_bars_cover_the_last_day(tmp_path):
@@ -57,15 +71,15 @@ def test_hourly_bars_cover_the_last_day(tmp_path):
 
 
 def test_bad_file_and_bad_readings_are_ignored(tmp_path):
-    (tmp_path / "energy.json").write_text('{"days": {"x": ["a", 1]}, "hours": 5}')
+    (tmp_path / "energy.json").write_text('{"days": {"x": [1, 2], "2026-10-12": ["a", 1]}, "hours": {"nope": [1, 2]}}')
     log, _ = log_at("2026-10-12T10:00:00", tmp_path)
     log.record(None, None)
     log.record(-1, -5)
+    log.record(float("nan"), float("inf"))
     assert log.summary() == {"power_w": None, "today_kwh": 0.0, "month_kwh": 0.0, "hourly_kwh": [0.0] * 24}
 
 
 def test_saved_and_read_back(tmp_path):
-    import json
     written = {}
     log, clock = log_at("2026-10-12T10:00:00", tmp_path, write=lambda path, data: written.update(data))
     log.record(10.0, 100)

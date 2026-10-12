@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var panel: ACMenuPanel?
     private var window: NSWindow?
     private var acWatch: AnyCancellable?
+    private let notifier = Notifier()
 
     static func main() {
         let app = NSApplication.shared
@@ -31,6 +32,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         buildMenu()
         buildStatusItem()
         client.onLinkLost = { [weak self] in _ = await self?.helper.ensureRunning() }
+        notifier.askPermission()
+        notifier.onTurnBackOn = { [weak self] in self?.client.restoreAC() }
+        client.onEvent = { [weak self] kind, text in self?.notifier.post(kind: kind, text: text) }
         Task {
             if !(await helper.ensureRunning()) {
                 client.show("Breeze could not reach its helper yet. Retrying.")
