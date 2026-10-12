@@ -9,17 +9,23 @@ struct EnergyLine: View {
     @State private var priceText = ""
 
     private static let maxPrice = 100_000.0  // MAX_PRICE in store.py
-    private static let barsSize = CGSize(width: 64, height: 18)
+    private static let barsSize = CGSize(width: 72, height: 24)
 
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
             Image(systemName: "bolt.fill").foregroundStyle(ACTheme.caution).font(.system(size: 11))
-            Text(summary)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(ACTheme.dim)
-                .lineLimit(1)
-                .minimumScaleFactor(0.85)
-                .contentTransition(.numericText())
+            // Two short lines, so nothing is ever cut off: now and today, then the month.
+            VStack(alignment: .leading, spacing: 2) {
+                Text(nowAndToday)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(ACTheme.dim)
+                Text(thisMonth)
+                    .font(.system(size: 11))
+                    .foregroundStyle(ACTheme.dim.opacity(0.75))
+            }
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .contentTransition(.numericText())
             Spacer(minLength: 4)
             HourBars(values: ac.hourlyKWh, height: Self.barsSize.height)
                 .frame(width: Self.barsSize.width, height: Self.barsSize.height)
@@ -29,16 +35,21 @@ struct EnergyLine: View {
         .popover(isPresented: $editingPrice, arrowEdge: .bottom) { priceForm }
     }
 
-    private var summary: String {
-        var parts: [String] = []
-        if let watts = ac.powerW { parts.append("\(watts) W") }
-        parts.append(String(format: "%.1f kWh today", ac.todayKWh) + cost(ac.todayKWh))
-        parts.append(String(format: "%.0f this month", ac.monthKWh) + cost(ac.monthKWh))
-        return parts.joined(separator: "  ·  ")
+    private var nowAndToday: String {
+        let today = Self.kWh(ac.todayKWh) + " today" + cost(ac.todayKWh)
+        guard let watts = ac.powerW else { return today }
+        return "\(watts) W  ·  " + today
+    }
+
+    private var thisMonth: String { Self.kWh(ac.monthKWh) + " this month" + cost(ac.monthKWh) }
+
+    /// One decimal while small, so 0.3 kWh never reads as 0.
+    static func kWh(_ value: Double) -> String {
+        String(format: value < 10 ? "%.1f kWh" : "%.0f kWh", value)
     }
 
     private func cost(_ kwh: Double) -> String {
-        ac.pricePerKWh > 0 ? " (\(Self.naira(kwh * ac.pricePerKWh)))" : ""
+        ac.pricePerKWh > 0 ? ", \(Self.naira(kwh * ac.pricePerKWh))" : ""
     }
 
     /// The less used things, out of the way of the everyday controls.
@@ -126,7 +137,7 @@ private struct HourBars: View {
         HStack(alignment: .bottom, spacing: 1) {
             ForEach(Array(values.enumerated()), id: \.offset) { _, value in
                 RoundedRectangle(cornerRadius: 1)
-                    .fill(value > 0 ? ACTheme.accent.opacity(0.8) : ACTheme.faint.opacity(0.35))
+                    .fill(value > 0 ? ACTheme.accent.opacity(0.8) : ACTheme.faint.opacity(0.6))
                     .frame(height: max(1.5, CGFloat(value / top) * height))
             }
         }
