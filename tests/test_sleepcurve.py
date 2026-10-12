@@ -145,13 +145,17 @@ def test_the_off_timer_ends_the_curve_too(tmp_path):
     assert asyncio.run(check()) == (False, False)
 
 
-def test_a_new_length_keeps_the_starting_point(tmp_path):
+def test_a_new_length_carries_on_from_where_it_is(tmp_path):
     session, clock = session_with_curve(tmp_path)
     session.start_sleep_curve(420)
     clock.advance(121)
-    session._device.target_temperature = 18.0  # raised by the curve
+    session._follow_curve(session._device)
+    session._device.target_temperature = session._pending.pop("target")  # sent: 18
     session.start_sleep_curve(540)
-    assert session.curve.state["start_target"] == 16.0
+    session._follow_curve(session._device)
+    state = session.curve.state
+    assert session.curve.active and state["start_target"] == 16.0 and state["minutes"] == 540
+    assert "target" not in session._pending  # still 18, nothing to send
 
 
 def test_a_change_on_the_hand_remote_stops_it(tmp_path):
@@ -173,8 +177,25 @@ def test_leaving_cooling_on_the_remote_stops_it(tmp_path):
 def test_power_back_after_a_cut_keeps_the_curve(tmp_path):
     async def check():
         session, clock = session_with_curve(tmp_path)
+        session.settings["restore_after_outage"] = True
         session.start_sleep_curve(420)
+        clock.advance(61)
         session._remember_running()
-        session.restore()
-        return session.curve.active, "target" in session._pending, session._pending.get("power")
-    assert asyncio.run(check()) == (True, False, True)
+        session._device.power_state = False  # the power went, and came back
+        session._device.target_temperature = 24.0  # the unit's own default after a reboot
+        session._came_back(600)
+        session._follow_curve(session._device)  # power on still on its way
+        kept = session.curve.active
+        session._device.power_state = session._pending.pop("power")  # sent
+        session._follow_curve(session._device)
+        return kept, session.curve.active, session._pending.get("target")
+    assert asyncio.run(check()) == (True, True, 17.0)
+
+
+def test_a_unit_that_comes_back_on_by_itself_keeps_the_curve(tmp_path):
+    session, clock = session_with_curve(tmp_path)
+    session.start_sleep_curve(420)
+    session._device.target_temperature = 24.0  # rebooted with its own setting
+    session._came_back(600)
+    session._follow_curve(session._device)
+    assert session.curve.active and session._pending.get("target") == 16.0

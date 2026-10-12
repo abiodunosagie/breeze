@@ -36,6 +36,7 @@ struct ScheduleEditor: View {
                         if !e.power { e.target = nil; e.mode = nil; e.fan = nil }
                         return e
                     }
+                    if entries == ac.schedules { done(); return }  // nothing changed: nothing to wait for
                     saving = true
                     client.saveSchedules(entries)
                 }
@@ -52,8 +53,8 @@ struct ScheduleEditor: View {
         .onChange(of: ac.schedules) { _, saved in
             if saving && saved == entries { done() }
         }
-        .onChange(of: client.toast) { _, toast in
-            if saving && toast != nil { saving = false }  // refused: the reason shows, the edits stay
+        .onChange(of: client.schedulesRefused) { _, _ in
+            saving = false  // refused: the reason shows, the edits stay
         }
     }
 

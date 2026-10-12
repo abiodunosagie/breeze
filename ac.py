@@ -380,6 +380,8 @@ class ACSession:
         """The AC answers again. If it was running and came back off, the power most likely went:
         put it back on when the user chose that, otherwise ask."""
         dev = self._device
+        # Whatever it was set to before the gap no longer says anything: the curve sends its setting again.
+        self._curve_sent = None
         if seconds < OUTAGE_SECONDS or self._last_running is None or dev.power_state or dev.self_clean_active:
             return
         minutes = max(1, round(seconds / 60))
@@ -438,7 +440,6 @@ class ACSession:
             self._send_event("filter", f"Time to wash the filter: about {hours} hours of cooling since the last wash.")
         self._check_health(dev, mode)
         if self._clean_allowed(dev) and self.care.clean_due(self.settings["auto_clean"]):
-            self.care.trying_clean()
             self._cleaner = asyncio.get_running_loop().create_task(self._start_clean())
 
     def _check_health(self, dev: Any, mode: str | None) -> None:
@@ -462,7 +463,8 @@ class ACSession:
                 # switched the AC on by hand since, or queued a change.
                 await dev.refresh()
                 if not dev.online or not self._off_and_idle(dev):
-                    return
+                    return  # not today's try: the next reading may find it free
+                self.care.trying_clean()
                 await dev.start_self_clean()
             self.care.asked_for_clean()
         except Exception as exc:
@@ -522,10 +524,13 @@ class ACSession:
             raise ACError("The sleep curve works while cooling.")
         if dev.sleep or self._pending.get("sleep"):
             raise ACError("Turn the unit's own Sleep off first.")
-        # A new length for a curve already running keeps its starting point, not the raised setting.
-        start = self.curve.state["start_target"] if self.curve.active else self._pending.get("target", dev.target_temperature)
-        self.curve.start(start, minutes, self.settings["sleep_curve_end"])
-        self._curve_sent = start
+        if self.curve.active:
+            # A new length for the curve already running: it carries on from where it is.
+            self.curve.change_length(minutes, self.settings["sleep_curve_end"])
+        else:
+            start = float(math.floor(self._pending.get("target", dev.target_temperature) + 0.5))  # as change() rounds
+            self.curve.start(start, minutes, self.settings["sleep_curve_end"])
+            self._curve_sent = dev.target_temperature
         self._on_change()
 
     def _stop_curve(self, why: str = "The sleep curve stopped.") -> None:
@@ -536,6 +541,8 @@ class ACSession:
         """Keep the setting where the curve wants it; stop if the AC was turned off or to its own Sleep."""
         if not self.curve.active:
             return
+        if self._pending.get("power") is True or self._inflight.get("power") is True:
+            return  # switching back on (after a power cut): look again once it is on
         if not dev.power_state or dev.sleep or _name(MODES, dev.operational_mode) not in CURVE_MODES:
             self._stop_curve()  # switched off, to Sleep or out of cooling another way
             return

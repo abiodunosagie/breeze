@@ -55,6 +55,12 @@ class SleepCurve:
         self.state = {"started_at": self._clock(), "start_target": float(start_target), "minutes": minutes, "end": end}
         self._save()
 
+    def change_length(self, minutes: int, end: str) -> None:
+        """A new length for the curve already running: same start, same steps so far."""
+        assert self.state is not None and minutes in LENGTHS and end in ENDS
+        self.state.update(minutes=minutes, end=end)
+        self._save()
+
     def stop(self) -> None:
         self.state = None
         self._save()

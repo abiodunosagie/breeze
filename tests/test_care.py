@@ -174,3 +174,15 @@ def test_no_clean_if_the_ac_was_switched_on_since_the_last_reading(tmp_path):
         await session._start_clean()
         return dev.cleans_started, session.care._asked_at
     assert asyncio.run(check()) == (0, None)
+
+
+def test_a_busy_moment_does_not_use_up_the_days_try(tmp_path):
+    from test_ac import online_session
+
+    async def check():
+        session = online_session()
+        session._device.power_state = False
+        session._pending = {"target": 20.0}  # queued just now
+        await session._start_clean()
+        return session.care._tried_on
+    assert asyncio.run(check()) is None

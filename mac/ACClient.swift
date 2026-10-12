@@ -275,6 +275,8 @@ struct SleepCurveInfo: Decodable, Equatable {
 private struct Envelope: Decodable {
     let type: String
     let message: String?
+    /// The request an error answers, like "ac_schedules".
+    let `for`: String?
 }
 
 /// WebSocket link to the helper. Publishes the AC state and short messages for the user.
@@ -290,6 +292,8 @@ final class ACClient: ObservableObject {
     var onEvent: ((String, String) -> Void)?
     @Published private(set) var linkUp = false
     @Published var toast: String?
+    /// Counts the helper refusing a list of schedules, so an open editor keeps the edits.
+    @Published private(set) var schedulesRefused = 0
 
     /// Called when the link drops, before reconnecting. Lets the app restart the helper.
     var onLinkLost: (() async -> Void)?
@@ -345,6 +349,7 @@ final class ACClient: ObservableObject {
             }
         case "error":
             if let text = envelope.message { show(text) }
+            if envelope.for == "ac_schedules" { schedulesRefused += 1 }
         default:
             break
         }
