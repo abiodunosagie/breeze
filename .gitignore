@@ -5,3 +5,4 @@ build/
 .envrc
 .env*
 *.pem
+SESSION_GUIDE.md

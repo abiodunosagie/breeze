@@ -19,8 +19,8 @@ final class ACMenuPanel: NSObject, NSWindowDelegate {
     /// soon after a close is that same click.
     private static let reopenGuard: TimeInterval = 0.3
 
-    init(client: ACClient) {
-        host = NSHostingView(rootView: ACPanelView(client: client))
+    init(client: ACClient, openWindow: @escaping () -> Void) {
+        host = NSHostingView(rootView: ACPanelView(client: client, openWindow: openWindow))
         panel = KeyablePanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
         super.init()
         panel.isFloatingPanel = true

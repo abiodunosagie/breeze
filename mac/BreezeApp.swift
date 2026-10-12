@@ -106,10 +106,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.autosaveName = "BreezeStatusItem"
         item.button?.target = self
-        item.button?.action = #selector(togglePanel)
+        item.button?.action = #selector(iconClicked)
+        // Right click (and Control click) opens the icon's menu, like every menu bar app.
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         item.button?.imagePosition = .imageLeading
         statusItem = item
-        panel = ACMenuPanel(client: client)
+        panel = ACMenuPanel(client: client, openWindow: { [weak self] in self?.showWindow() })
         acWatch = client.$ac.receive(on: RunLoop.main).sink { [weak self] ac in
             MainActor.assumeIsolated { self?.updateStatusItem(ac) }
         }
@@ -137,6 +139,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc func togglePanel() {
         panel?.toggle(below: statusItem?.button)
+    }
+
+    @objc private func iconClicked() {
+        let event = NSApp.currentEvent
+        if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
+            showIconMenu()
+        } else {
+            togglePanel()
+        }
+    }
+
+    /// The icon's own menu: open the remote window, the panel, or quit.
+    private func showIconMenu() {
+        guard let button = statusItem?.button else { return }
+        panel?.close()
+        let menu = NSMenu()
+        menu.addItem(withTitle: "Open Breeze Remote", action: #selector(showWindow), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Show Panel", action: #selector(togglePanel), keyEquivalent: "").target = self
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Quit Breeze", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
     }
 
     private func buildMenu() {

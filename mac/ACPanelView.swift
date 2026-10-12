@@ -1,37 +1,10 @@
 import AppKit
 import SwiftUI
 
-/// Colours for the air conditioner panel: a night blue card.
-enum ACTheme {
-    static let top = Color(red: 0.13, green: 0.21, blue: 0.40)
-    static let bottom = Color(red: 0.04, green: 0.07, blue: 0.16)
-    static let accent = Color(red: 0.35, green: 0.58, blue: 1.0)
-    static let eco = Color(red: 0.38, green: 0.80, blue: 0.48)
-    static let text = Color.white
-    static let dim = Color.white.opacity(0.55)
-    static let faint = Color.white.opacity(0.25)
-    static let tile = Color.white.opacity(0.06)
-    static let tileEdge = Color.white.opacity(0.09)
-    static let track = Color.black.opacity(0.35)
-}
-
-/// Names and symbols for the values the helper sends.
-enum ACNames {
-    static let modes: [String: (String, String)] = [
-        "auto": ("Auto", "arrow.triangle.2.circlepath"), "cool": ("Cool", "snowflake"),
-        "dry": ("Dry", "drop"), "heat": ("Heat", "sun.max"), "fan": ("Fan only", "fan"),
-    ]
-    static let fans = ["auto": "Auto", "silent": "Silent", "low": "Low", "medium": "Medium", "high": "High", "max": "Max"]
-    static let swings = ["off": "Fixed", "vertical": "Up/down", "horizontal": "Sideways", "both": "Both"]
-
-    static func duration(_ minutes: Int) -> String {
-        minutes < 60 ? "\(minutes) min" : minutes % 60 == 0 ? "\(minutes / 60) h" : "\(minutes / 60) h \(minutes % 60) min"
-    }
-}
-
 /// The air conditioner panel that drops from the menu bar.
 struct ACPanelView: View {
     @ObservedObject var client: ACClient
+    let openWindow: () -> Void
 
     static let width: CGFloat = 340
     /// The Terminal step that links an air conditioner; the password is typed there, never in Breeze.
@@ -48,6 +21,7 @@ struct ACPanelView: View {
                 Text(toast).font(.system(size: 12)).foregroundStyle(ACTheme.dim)
                     .padding(.top, 12).transition(.opacity)
             }
+            footer
         }
         .padding(22)
         .frame(width: Self.width)
@@ -57,6 +31,18 @@ struct ACPanelView: View {
         .foregroundStyle(ACTheme.text)
         .environment(\.colorScheme, .dark)
         .onAppear { client.refreshAC() }
+    }
+
+    private var footer: some View {
+        HStack {
+            Button("Open Remote", action: openWindow)
+            Spacer()
+            Button("Quit Breeze") { NSApp.terminate(nil) }
+        }
+        .buttonStyle(.borderless)
+        .font(.system(size: 12, weight: .medium))
+        .foregroundStyle(ACTheme.dim)
+        .padding(.top, 16)
     }
 
     @ViewBuilder private func placeholder(_ ac: ACState?) -> some View {
