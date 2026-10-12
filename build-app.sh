@@ -24,7 +24,7 @@ echo "Checking the helper..."
 echo "Compiling..."
 xcrun swiftc -O -parse-as-library -target arm64-apple-macos15.0 \
   -o "$BUILD/Breeze" "$PROJECT"/mac/*.swift \
-  -framework AppKit -framework SwiftUI
+  -framework AppKit -framework SwiftUI -framework Carbon
 
 echo "Drawing icon..."
 rm -rf "$BUILD/Breeze.iconset"

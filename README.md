@@ -16,6 +16,19 @@
 - Modelled key for key on the Midea hand remote: LCD with segment digits, power, Mode, AI (Eco), the ring with up, down, SET, OK and the timer, fan, Swing, Sleep, Cool/Heat Flash, LED, Fresh and the child lock.
 - Keys sink when pressed and the screen lights up, like the real remote's backlight.
 
+**Looking after it** (each one off until you turn it on, from the More menu)
+- Schedules: on to a temperature, or off, at a time on chosen days. They run while Breeze runs, up to 15 minutes late for a Mac that just woke; later than that they are skipped and you are told.
+- A sleep curve for six to nine hours: one degree warmer after the first hour, another after the second, then back to where it started (or off) in the morning. It stops as soon as you change things yourself.
+- Self clean now and then: after 40 hours of cooling, by day, only when the AC has been off a while and nothing else is going on.
+- Dry the coil before switching off, a filter wash reminder, and a power cut notice with Turn Back On.
+- Electricity now, today and this month, in naira once you set your price.
+- A health check: how far below the room the coil gets while cooling hard, learnt over the first week, with a warning if it falls well short.
+
+**Keyboard** (anywhere, no Accessibility permission needed)
+- Control Option Command B: open the panel
+- Control Option Command Up and Down: one degree warmer or cooler
+- Control Option Command P: power
+
 **Careful by design**
 - While the AC cleans itself, every key but power is refused, so a stray click cannot stop the clean.
 - Each control shows only what your unit supports. Settings changed quickly (a slider drag) go out as one command.

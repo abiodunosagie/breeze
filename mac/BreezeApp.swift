@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import Combine
 import SwiftUI
 
@@ -12,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow?
     private var acWatch: AnyCancellable?
     private let notifier = Notifier()
+    private var shortcuts: GlobalShortcuts?
 
     static func main() {
         let app = NSApplication.shared
@@ -31,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.setActivationPolicy(.accessory)
         buildMenu()
         buildStatusItem()
+        installShortcuts()
         client.onLinkLost = { [weak self] in _ = await self?.helper.ensureRunning() }
         notifier.askPermission()
         notifier.onTurnBackOn = { [weak self] in self?.client.restoreAC() }
@@ -162,9 +165,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(withTitle: "Open Breeze Remote", action: #selector(showWindow), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Show Panel", action: #selector(togglePanel), keyEquivalent: "").target = self
         menu.addItem(.separator())
+        // The keyboard shortcuts, as a reminder; ones another app holds are marked.
+        let taken = Set(shortcuts?.unavailable ?? [])
+        for (label, what) in Self.shortcutHelp {
+            let item = menu.addItem(withTitle: "\(label): \(what)\(taken.contains(label) ? " (taken by another app)" : "")",
+                                    action: nil, keyEquivalent: "")
+            item.isEnabled = false
+        }
+        menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Breeze", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         // The status button is flipped, so y past its height is just under the icon.
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
+    }
+
+    // MARK: global shortcuts
+
+    /// Control Option Command, a family no other app of ours uses (Couch has Option Command R and
+    /// Control Option Space, arrows, M and P).
+    private static let shortcutHelp: [(String, String)] = [
+        ("Control Option Command B", "panel"),
+        ("Control Option Command Up", "1° warmer"),
+        ("Control Option Command Down", "1° cooler"),
+        ("Control Option Command P", "power"),
+    ]
+
+    private func installShortcuts() {
+        let family = controlKey | optionKey | cmdKey
+        let nudge: (Double) -> Void = { [weak self] step in
+            guard let self, let ac = self.client.ac, ac.isOnline, ac.power, let target = ac.target else { return }
+            let next = Swift.min(Swift.max(target + step, ac.min), ac.max)
+            if next != target { self.client.setAC(["target": next]) }
+        }
+        let keys = [kVK_ANSI_B, kVK_UpArrow, kVK_DownArrow, kVK_ANSI_P]
+        let actions: [() -> Void] = [
+            { [weak self] in self?.togglePanel() },
+            { nudge(1) },
+            { nudge(-1) },
+            { [weak self] in
+                guard let self, let ac = self.client.ac, ac.isOnline else { return }
+                self.client.setAC(["power": !ac.power])
+            },
+        ]
+        let list = zip(Self.shortcutHelp, zip(keys, actions)).map { help, pair in
+            GlobalShortcuts.Shortcut(keyCode: pair.0, modifiers: family, label: help.0, action: pair.1)
+        }
+        shortcuts = GlobalShortcuts(list)
     }
 
     private func buildMenu() {
