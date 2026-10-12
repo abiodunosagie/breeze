@@ -45,19 +45,30 @@ struct ACUnit: View {
     private var flowing: Bool { ac.power || ac.cleaning }
     private var style: AirStyle { .of(mode: ac.mode, fan: ac.fan, swing: ac.swing, cleaning: ac.cleaning && !ac.power) }
 
+    /// The air is wider than the panel, so it runs out at both walls, and tall enough to drift
+    /// down behind the temperature before it fades away.
+    static let airSize = CGSize(width: 400, height: 340)
+
     var body: some View {
-        ZStack(alignment: .top) {
-            Airflow(style: style)
-                .id(style)  // a new mode fades in over the old one, colours and all
-                .transition(.opacity)
-                .padding(.top, 50)
-                .opacity(flowing ? 1 : 0)
-                .scaleEffect(x: 1, y: flowing ? 1 : 0.4, anchor: .top)
-                .animation(.easeInOut(duration: 0.9), value: flowing)
-                .animation(.easeInOut(duration: 0.7), value: style)
-            unit
-        }
-        .frame(maxWidth: .infinity)
+        unit
+            .frame(maxWidth: .infinity)
+            .frame(maxHeight: .infinity, alignment: .top)
+            .background(alignment: .top) {
+                Airflow(style: style)
+                    .id(style)  // a new mode fades in over the old one, colours and all
+                    .transition(.opacity)
+                    .frame(width: Self.airSize.width, height: Self.airSize.height)
+                    // Soft at the top too, so the mist has no edge beside the unit.
+                    .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.07),
+                                                 .init(color: .black, location: 0.55), .init(color: .clear, location: 1)],
+                                         startPoint: .top, endPoint: .bottom))
+                    .offset(y: 44)
+                    .opacity(flowing ? 1 : 0)
+                    .scaleEffect(x: 1, y: flowing ? 1 : 0.35, anchor: .top)
+                    .animation(.easeInOut(duration: 0.9), value: flowing)
+                    .animation(.easeInOut(duration: 0.7), value: style)
+                    .allowsHitTesting(false)
+            }
     }
 
     private var unit: some View {
@@ -106,61 +117,92 @@ struct Airflow: View {
 struct AirflowCanvas: View {
     let style: AirStyle
     let time: Double
-    private static let steps = 28
+    private static let steps = 32
     private static let particlesPerLine = 3
 
     var body: some View {
         Canvas { canvas, size in
-            let lines = (0..<style.lines).map { stream($0, in: size) }
+            // The air breathes: a slow swell in strength, like a real draught.
+            let breath = 0.85 + 0.15 * sin(time * 0.9)
+            let mid = size.width / 2
 
-            // Glow under the vent.
-            // The gradient reaches nothing well inside the rectangle, so the glow has no edge.
-            canvas.fill(Path(CGRect(x: 0, y: 0, width: size.width, height: 130)), with: .radialGradient(
-                Gradient(colors: [style.glow.opacity(0.30), style.glow.opacity(0)]),
-                center: CGPoint(x: size.width / 2, y: 0), startRadius: 0, endRadius: 120))
-
-            // Soft, wide streams under a blur, for depth.
+            // Mist pouring from the vent, wide and soft.
             canvas.drawLayer { layer in
-                layer.addFilter(.blur(radius: 5))
-                for points in lines {
-                    layer.stroke(smooth(points), with: fade(size), style: StrokeStyle(lineWidth: 7, lineCap: .round))
+                layer.addFilter(.blur(radius: 24))
+                var plume = Path()
+                plume.move(to: CGPoint(x: mid - 95, y: 0))
+                plume.addLine(to: CGPoint(x: mid + 95, y: 0))
+                plume.addQuadCurve(to: CGPoint(x: size.width + 40, y: size.height * 0.85),
+                                   control: CGPoint(x: mid + 150, y: size.height * 0.35))
+                plume.addLine(to: CGPoint(x: -40, y: size.height * 0.85))
+                plume.addQuadCurve(to: CGPoint(x: mid - 95, y: 0), control: CGPoint(x: mid - 150, y: size.height * 0.35))
+                layer.fill(plume, with: .linearGradient(
+                    Gradient(colors: [style.glow.opacity(0.30 * breath), style.glow.opacity(0.08), style.glow.opacity(0)]),
+                    startPoint: CGPoint(x: mid, y: 0), endPoint: CGPoint(x: mid, y: size.height * 0.85)))
+            }
+
+            // Far streams: fainter, thinner and slower, for depth.
+            let far = (0..<style.lines).map { stream($0, in: size, depth: 0.55, offset: 0.5) }
+            for (index, points) in far.enumerated() {
+                let path = smooth(points)
+                canvas.stroke(path, with: fade(size, strength: 0.22 * breath), style: StrokeStyle(lineWidth: 0.8, lineCap: .round))
+                let phase = -CGFloat((time * style.speed * 55 + Double(index) * 37).truncatingRemainder(dividingBy: 140))
+                canvas.stroke(path, with: fade(size, strength: 0.45 * breath),
+                              style: StrokeStyle(lineWidth: 1.2, lineCap: .round, dash: [18, 122], dashPhase: phase))
+            }
+
+            // Near streams, soft and wide under a blur, then fine with pulses of air.
+            let near = (0..<style.lines).map { stream($0, in: size, depth: 1, offset: 0) }
+            canvas.drawLayer { layer in
+                layer.addFilter(.blur(radius: 6))
+                for points in near {
+                    layer.stroke(smooth(points), with: fade(size, strength: 0.45 * breath), style: StrokeStyle(lineWidth: 8, lineCap: .round))
                 }
             }
-
-            // Fine streams with pulses of air travelling down them.
-            for (index, points) in lines.enumerated() {
+            for (index, points) in near.enumerated() {
                 let path = smooth(points)
-                canvas.stroke(path, with: fade(size, strength: 0.35), style: StrokeStyle(lineWidth: 1, lineCap: .round))
+                canvas.stroke(path, with: fade(size, strength: 0.35 * breath), style: StrokeStyle(lineWidth: 1, lineCap: .round))
                 let phase = -CGFloat((time * style.speed * 90 + Double(index) * 23).truncatingRemainder(dividingBy: 120))
-                canvas.stroke(path, with: fade(size, strength: 1),
-                              style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [26, 94], dashPhase: phase))
+                canvas.stroke(path, with: fade(size, strength: breath),
+                              style: StrokeStyle(lineWidth: 2.2, lineCap: .round, dash: [28, 92], dashPhase: phase))
             }
 
-            // Particles riding the air, fading as they travel.
-            for (index, points) in lines.enumerated() {
-                for particle in 0..<Self.particlesPerLine {
+            // Particles riding the air: a soft glow under each, a bright core on top.
+            let dots = near.enumerated().flatMap { index, points in
+                (0..<Self.particlesPerLine).map { particle -> (CGPoint, Double, Double) in
                     let seed = Double(index * 7 + particle * 13)
                     let progress = (time * style.speed * 0.32 + seed * 0.137).truncatingRemainder(dividingBy: 1)
-                    let point = sample(points, at: progress)
-                    let radius = 0.8 + progress * 1.6
-                    let alpha = sin(progress * .pi) * 0.85
-                    let dot = CGRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2)
-                    canvas.fill(Path(ellipseIn: dot), with: .color(style.near.opacity(alpha)))
+                    return (sample(points, at: progress), 0.8 + progress * 1.8, sin(progress * .pi) * 0.9)
                 }
+            }
+            canvas.drawLayer { layer in
+                layer.addFilter(.blur(radius: 3))
+                for (point, radius, alpha) in dots {
+                    let r = radius * 2.6
+                    layer.fill(Path(ellipseIn: CGRect(x: point.x - r, y: point.y - r, width: r * 2, height: r * 2)),
+                               with: .color(style.far.opacity(alpha * 0.6)))
+                }
+            }
+            for (point, radius, alpha) in dots {
+                canvas.fill(Path(ellipseIn: CGRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2)),
+                            with: .color(style.near.opacity(alpha)))
             }
         }
     }
 
     /// The points of one stream, from the vent outwards, bending with the louvers and waving.
-    private func stream(_ index: Int, in size: CGSize) -> [CGPoint] {
+    /// Outer streams fan past the edges of the panel, so the air reaches the walls.
+    private func stream(_ index: Int, in size: CGSize, depth: Double, offset: Double) -> [CGPoint] {
         let mid = size.width / 2
-        let lane = style.lines > 1 ? Double(index) / Double(style.lines - 1) * 2 - 1 : 0  // -1...1
-        let sway = sin(time * 0.55) * style.sway
+        let count = Double(max(style.lines - 1, 1))
+        let lane = min((Double(index) + offset) / count, 1) * 2 - 1  // -1...1
+        let sway = sin(time * 0.55 + offset) * style.sway
+        let reach = size.width * 0.62 * (0.85 + 0.15 * depth)
         return (0...Self.steps).map { step in
             let t = Double(step) / Double(Self.steps)
-            let fan = (lane * style.spread + sway * t) * pow(t, 1.15) * size.width * 0.5
-            let wave = sin(t * .pi * 2.2 - time * style.speed * 2.6 + Double(index) * 0.9) * 5 * style.wave * t
-            return CGPoint(x: mid + lane * 80 + fan + wave, y: t * size.height)
+            let fan = (lane * style.spread + sway * t) * pow(t, 1.1) * reach
+            let wave = sin(t * .pi * 2.2 - time * style.speed * 2.6 * depth + Double(index) * 0.9 + offset * 3) * 6 * style.wave * t
+            return CGPoint(x: mid + lane * 84 + fan + wave, y: t * size.height * (0.9 + 0.1 * depth))
         }
     }
 
@@ -188,7 +230,7 @@ struct AirflowCanvas: View {
     private func fade(_ size: CGSize, strength: Double = 0.5) -> GraphicsContext.Shading {
         .linearGradient(Gradient(stops: [
             .init(color: style.near.opacity(0.9 * strength), location: 0),
-            .init(color: style.far.opacity(0.6 * strength), location: 0.55),
+            .init(color: style.far.opacity(0.6 * strength), location: 0.5),
             .init(color: style.far.opacity(0), location: 1),
         ]), startPoint: CGPoint(x: size.width / 2, y: 0), endPoint: CGPoint(x: size.width / 2, y: size.height))
     }
