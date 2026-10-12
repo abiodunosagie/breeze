@@ -1,0 +1,193 @@
+import Foundation
+
+/// The air conditioner as the helper reports it. Lists hold only what this unit supports.
+struct ACState: Decodable, Equatable {
+    enum Status: String, Decodable {
+        case unlinked, connecting, online, offline
+    }
+    var status: Status
+    var power = false
+    var mode: String?
+    var target: Double?
+    var indoor: Double?
+    var outdoor: Double?
+    var fan: String?
+    var swing: String?
+    var eco = false
+    var turbo = false
+    var sleep = false
+    var flash = false
+    var display = false
+    /// Self clean is running (the unit is off meanwhile).
+    var cleaning = false
+    var min: Double = 16
+    var max: Double = 30
+    var modes: [String] = []
+    var fans: [String] = []
+    var swings: [String] = []
+    var hasEco = false
+    var hasTurbo = false
+    var hasDisplay = false
+    var hasFlash = false
+    var timerChoices: [Int] = []
+    /// Minutes until the off timer turns the AC off, or nil.
+    var offIn: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case status, power, mode, target, indoor, outdoor, fan, swing, eco, turbo, sleep, flash, display, cleaning
+        case min, max, modes, fans, swings
+        case hasEco = "has_eco"
+        case hasTurbo = "has_turbo"
+        case hasDisplay = "has_display"
+        case hasFlash = "has_flash"
+        case timerChoices = "timer_choices"
+        case offIn = "off_in"
+    }
+
+    /// Every field but the status is optional: an offline or unlinked AC sends only that.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T { (try? c.decode(T.self, forKey: key)) ?? fallback }
+        status = value(.status, Status.offline)
+        power = value(.power, false)
+        mode = try? c.decode(String.self, forKey: .mode)
+        target = try? c.decode(Double.self, forKey: .target)
+        indoor = try? c.decode(Double.self, forKey: .indoor)
+        outdoor = try? c.decode(Double.self, forKey: .outdoor)
+        fan = try? c.decode(String.self, forKey: .fan)
+        swing = try? c.decode(String.self, forKey: .swing)
+        eco = value(.eco, false)
+        turbo = value(.turbo, false)
+        sleep = value(.sleep, false)
+        flash = value(.flash, false)
+        display = value(.display, false)
+        cleaning = value(.cleaning, false)
+        min = value(.min, 16.0)
+        max = value(.max, 30.0)
+        modes = value(.modes, [String]())
+        fans = value(.fans, [String]())
+        swings = value(.swings, [String]())
+        hasEco = value(.hasEco, false)
+        hasTurbo = value(.hasTurbo, false)
+        hasDisplay = value(.hasDisplay, false)
+        hasFlash = value(.hasFlash, false)
+        timerChoices = value(.timerChoices, [Int]())
+        offIn = try? c.decode(Int.self, forKey: .offIn)
+    }
+
+    var isOnline: Bool { status == .online }
+}
+
+private struct Envelope: Decodable {
+    let type: String
+    let message: String?
+}
+
+/// WebSocket link to the helper. Publishes the AC state and short messages for the user.
+@MainActor
+final class ACClient: ObservableObject {
+    static let toastSeconds: UInt64 = 4
+    private static let firstRetry: UInt64 = 500_000_000
+    private static let maxRetry: UInt64 = 8_000_000_000
+
+    /// Nil until the helper reports.
+    @Published private(set) var ac: ACState?
+    @Published private(set) var linkUp = false
+    @Published var toast: String?
+
+    /// Called when the link drops, before reconnecting. Lets the app restart the helper.
+    var onLinkLost: (() async -> Void)?
+
+    private let token: String
+    private var task: URLSessionWebSocketTask?
+    private var toastClear: Task<Void, Never>?
+    private var retryDelay = ACClient.firstRetry
+
+    init(token: String) {
+        self.token = token
+    }
+
+    func connect() {
+        var request = URLRequest(url: URL(string: "ws://127.0.0.1:\(Helper.port)/ws")!)
+        // The helper refuses other origins (web pages) and requests without our launch token.
+        request.setValue(Helper.baseURL.absoluteString, forHTTPHeaderField: "Origin")
+        request.setValue(token, forHTTPHeaderField: Helper.tokenHeader)
+        let task = URLSession.shared.webSocketTask(with: request)
+        self.task = task
+        task.resume()
+        Task { await receive(on: task) }
+    }
+
+    private func receive(on task: URLSessionWebSocketTask) async {
+        while true {
+            let message: URLSessionWebSocketTask.Message
+            do {
+                message = try await task.receive()
+            } catch {
+                guard task === self.task else { return }
+                await linkLost()
+                return
+            }
+            guard case .string(let text) = message, let data = text.data(using: .utf8) else { continue }
+            linkUp = true
+            retryDelay = Self.firstRetry
+            handle(data)
+        }
+    }
+
+    private func handle(_ data: Data) {
+        guard let envelope = try? JSONDecoder().decode(Envelope.self, from: data) else { return }
+        switch envelope.type {
+        case "ac":
+            if let next = try? JSONDecoder().decode(ACState.self, from: data) { ac = next }
+        case "error":
+            if let text = envelope.message { show(text) }
+        default:
+            break
+        }
+    }
+
+    private func linkLost() async {
+        linkUp = false
+        ac = nil
+        await onLinkLost?()
+        try? await Task.sleep(nanoseconds: retryDelay)
+        retryDelay = min(retryDelay * 2, Self.maxRetry)
+        connect()
+    }
+
+    func show(_ text: String) {
+        toast = text
+        toastClear?.cancel()
+        toastClear = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.toastSeconds * 1_000_000_000)
+            if !Task.isCancelled { self?.toast = nil }
+        }
+    }
+
+    // MARK: commands
+
+    func refreshAC() { send(["type": "ac_get"]) }
+    /// Change one or more settings, like ["target": 22] or ["power": false]. The helper checks each.
+    func setAC(_ changes: [String: Any]) { send(["type": "ac_set", "changes": changes]) }
+    func toggleACDisplay() { send(["type": "ac_display"]) }
+    /// Turn the AC off after `minutes`, or cancel the timer with nil.
+    func setOffTimer(_ minutes: Int?) { send(["type": "ac_timer", "minutes": minutes as Any? ?? NSNull()]) }
+
+    private func send(_ payload: [String: Any]) {
+        guard let task, linkUp,
+              let data = try? JSONSerialization.data(withJSONObject: payload),
+              let text = String(data: data, encoding: .utf8) else {
+            show("Breeze is still starting. Try again in a moment.")
+            return
+        }
+        task.send(.string(text)) { [weak self] error in
+            guard error != nil else { return }
+            // A failed send means the socket is dead; cancelling makes receive() fail and reconnect.
+            Task { @MainActor in
+                guard let self, task === self.task else { return }
+                task.cancel(with: .goingAway, reason: nil)
+            }
+        }
+    }
+}
