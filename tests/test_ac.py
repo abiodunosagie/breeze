@@ -31,6 +31,7 @@ class FakeAC:
         self.supports_purifier = self.supports_breeze_away = True
         self.supports_vertical_swing_angle = self.supports_horizontal_swing_angle = True
         self.supports_custom_fan_speed = True
+        self.total_kwh, self.power = 256.03, 225.0
         self.online = True
         self.min_target_temperature, self.max_target_temperature = 16.0, 30.0
         self.supported_operation_modes = [MODES["fan"], MODES["dry"], MODES["cool"], MODES["auto"]]
@@ -39,6 +40,12 @@ class FakeAC:
         self.supports_eco, self.supports_ieco = False, True
         self.supports_turbo = self.supports_display_control = self.supports_flash = True
         self.applied = []
+
+    def get_total_energy_usage(self, _format):
+        return self.total_kwh
+
+    def get_real_time_power_usage(self, _format):
+        return self.power
 
     async def authenticate(self, token, key):
         pass
@@ -54,6 +61,7 @@ class FakeAC:
 def online_session(device=None):
     session = ACSession(on_change=lambda: None)
     session.settings = dict(ac.DEFAULT_SETTINGS)  # never the owner's real choices
+    session.energy = ac.EnergyLog(ac.Path("/nonexistent/energy.json"), lambda path, data: None)
     session._device = device or FakeAC()
     session.status = "online"
     return session

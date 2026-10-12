@@ -24,13 +24,19 @@ from typing import Any
 from msmart.device import AirConditioner
 from msmart.discover import Discover
 
+from energy import EnergyLog
+
 CONFIG_DIR = Path.home() / ".config" / "breeze"
 AC_FILE = CONFIG_DIR / "ac.json"
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
+ENERGY_FILE = CONFIG_DIR / "energy.json"
+MAX_PRICE = 100_000.0  # naira per kWh; anything above is a typo
 # The user's choices, all off until turned on.
 DEFAULT_SETTINGS: dict[str, Any] = {
     # On switching off after cooling, run the fan alone until the coil is dry: no damp coil for mould.
     "dry_coil": False,
+    # Naira per kWh, set by the user. 0 means not set: kWh only, no money.
+    "price_per_kwh": 0.0,
 }
 # Drying ends when the coil is this close to the room temperature, or after DRY_MAX_MINUTES.
 DRY_DONE_WITHIN = 1.0
@@ -164,6 +170,7 @@ class ACSession:
         self._top_hz = COMPRESSOR_HZ_GUESS  # fastest compressor speed seen, to judge how hard it works
         self._cleaning_since: float | None = None  # loop time the current self clean was first seen
         self.settings = load_settings()
+        self.energy = EnergyLog(ENERGY_FILE, write_private)
         # While drying the coil: when it started and the mode to go back to, for next time.
         self._drying: dict[str, Any] | None = None
         if self._link:
@@ -208,6 +215,7 @@ class ACSession:
             "fault": dev.error_code or None,
             "filter_due": bool(dev.filter_alert),
             "drying_minutes_left": self._drying_minutes_left(),
+            **self.energy.summary(),
         }
         # Changes on their way show already, so the app never snaps back meanwhile.
         state.update(self._inflight)
@@ -273,6 +281,7 @@ class ACSession:
             self._poller = asyncio.get_running_loop().create_task(self._poll_loop())
 
     async def close(self) -> None:
+        self.energy.save()
         if self._off_timer:
             self._off_timer.cancel()
         tasks = [task for task in (self._poller, self._flusher) if task]
@@ -340,6 +349,8 @@ class ACSession:
     def _after_fresh_reading(self) -> None:
         """Things that wait for a reading we can trust: a due timer, changes held back by a failure."""
         dev = self._device
+        BCD = AirConditioner.EnergyDataFormat.BCD  # the right encoding on this unit, see energy.py
+        self.energy.record(dev.get_total_energy_usage(BCD), dev.get_real_time_power_usage(BCD))
         hz = dev.compressor_frequency or 0
         self._top_hz = max(self._top_hz, hz)
         if dev.self_clean_active:
@@ -418,8 +429,13 @@ class ACSession:
         return max(1, round(DRY_MAX_MINUTES - elapsed))
 
     def set_setting(self, name: object, value: object) -> None:
-        if name not in DEFAULT_SETTINGS or not isinstance(value, type(DEFAULT_SETTINGS[name])):
+        if name not in DEFAULT_SETTINGS:
             raise ACError("Unknown setting.")
+        kind = type(DEFAULT_SETTINGS[name])
+        if kind is float and isinstance(value, int) and not isinstance(value, bool):
+            value = float(value)  # JSON sends 120 for 120.0
+        if not isinstance(value, kind) or (kind is float and not 0 <= value <= MAX_PRICE):
+            raise ACError("That value is not allowed.")
         self.settings[name] = value
         write_private(SETTINGS_FILE, self.settings)
         self._on_change()

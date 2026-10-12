@@ -123,6 +123,7 @@ private struct ACControls: View {
                     .opacity(fanOnly ? 0.4 : 1)
                 tiles
                 extras
+                EnergyCard(client: client, ac: ac)
             }
             .opacity(ac.power ? 1 : 0.45)
             // Sleep mode: the panel dims for the night.

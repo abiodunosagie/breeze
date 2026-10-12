@@ -42,6 +42,13 @@ struct ACState: Decodable, Equatable {
     var hasLouverV = false
     var hasLouverH = false
     var hasFanPercent = false
+    /// Electricity: power now, kWh today and this month, and kWh for each of the last 24 hours.
+    var powerW: Int?
+    var todayKWh: Double = 0
+    var monthKWh: Double = 0
+    var hourlyKWh: [Double] = []
+    /// Naira per kWh, 0 when not set.
+    var pricePerKWh: Double = 0
     /// Minutes left while the coil dries before switching off, or nil.
     var dryingMinutesLeft: Int?
     /// The user's choices kept by the helper.
@@ -78,6 +85,10 @@ struct ACState: Decodable, Equatable {
         case hasLouverV = "has_louver_v"
         case hasLouverH = "has_louver_h"
         case hasFanPercent = "has_fan_percent"
+        case powerW = "power_w"
+        case todayKWh = "today_kwh"
+        case monthKWh = "month_kwh"
+        case hourlyKWh = "hourly_kwh"
         case dryingMinutesLeft = "drying_minutes_left"
         case settings
         case min, max, modes, fans, swings
@@ -127,8 +138,13 @@ struct ACState: Decodable, Equatable {
         hasLouverH = value(.hasLouverH, false)
         hasFanPercent = value(.hasFanPercent, false)
         dryingMinutesLeft = try? c.decode(Int.self, forKey: .dryingMinutesLeft)
-        let settings = value(.settings, [String: Bool]())
-        dryCoil = settings["dry_coil"] ?? false
+        let settings = (try? c.decode(Settings.self, forKey: .settings)) ?? Settings()
+        dryCoil = settings.dryCoil
+        pricePerKWh = settings.price
+        powerW = try? c.decode(Int.self, forKey: .powerW)
+        todayKWh = value(.todayKWh, 0.0)
+        monthKWh = value(.monthKWh, 0.0)
+        hourlyKWh = value(.hourlyKWh, [Double]())
         min = value(.min, 16.0)
         max = value(.max, 30.0)
         modes = value(.modes, [String]())
@@ -145,6 +161,22 @@ struct ACState: Decodable, Equatable {
     }
 
     var isOnline: Bool { status == .online }
+
+    /// The user's choices, as the helper keeps them.
+    private struct Settings: Decodable {
+        var dryCoil = false
+        var price = 0.0
+        enum CodingKeys: String, CodingKey {
+            case dryCoil = "dry_coil"
+            case price = "price_per_kwh"
+        }
+        init() {}
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            dryCoil = (try? c.decode(Bool.self, forKey: .dryCoil)) ?? false
+            price = (try? c.decode(Double.self, forKey: .price)) ?? 0
+        }
+    }
 }
 
 private struct Envelope: Decodable {
@@ -244,7 +276,7 @@ final class ACClient: ObservableObject {
     func setAC(_ changes: [String: Any]) { send(["type": "ac_set", "changes": changes]) }
     func toggleACDisplay() { send(["type": "ac_display"]) }
     /// One of the user's choices the helper keeps, like "dry_coil".
-    func setSetting(_ name: String, _ value: Bool) { send(["type": "ac_setting", "name": name, "value": value]) }
+    func setSetting(_ name: String, _ value: Any) { send(["type": "ac_setting", "name": name, "value": value]) }
     /// Turn the AC off after `minutes`, or cancel the timer with nil.
     func setOffTimer(_ minutes: Int?) { send(["type": "ac_timer", "minutes": minutes as Any? ?? NSNull()]) }
 
