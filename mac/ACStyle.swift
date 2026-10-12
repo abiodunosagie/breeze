@@ -21,6 +21,8 @@ enum ACNames {
         "dry": ("Dry", "drop"), "heat": ("Heat", "sun.max"), "fan": ("Fan only", "fan"),
     ]
     static let fans = ["auto": "Auto", "silent": "Silent", "low": "Low", "medium": "Medium", "high": "High", "max": "Max"]
+    static let louverPositions = [("1", "Top"), ("2", "High"), ("3", "Middle"), ("4", "Low"), ("5", "Bottom")]
+    static let louverSides = [("1", "Far left"), ("2", "Left"), ("3", "Centre"), ("4", "Right"), ("5", "Far right")]
     static let swings = ["off": "Fixed", "vertical": "Up/down", "horizontal": "Sideways", "both": "Both"]
 
     static func duration(_ minutes: Int) -> String {

@@ -221,9 +221,17 @@ private struct ACControls: View {
                      options: ac.modes.map { ($0, ACNames.modes[$0]?.0 ?? $0) }, current: ac.mode) {
                 client.setAC(["mode": $0])
             }
-            pickTile(title: "Fan", value: ACNames.fans[ac.fan ?? ""] ?? "--", symbol: "fan",
-                     options: ac.fans.map { ($0, ACNames.fans[$0] ?? $0) }, current: ac.fan) {
+            pickTile(title: "Fan", value: ac.fanPercent.map { "\($0)%" } ?? ACNames.fans[ac.fan ?? ""] ?? "--", symbol: "fan",
+                     options: ac.fans.map { ($0, ACNames.fans[$0] ?? $0) }, current: ac.fanPercent == nil ? ac.fan : nil) {
                 client.setAC(["fan": $0])
+            } more: {
+                if ac.hasFanPercent {
+                    Section("Exact speed") {
+                        ForEach(Array(stride(from: 10, through: 100, by: 10)), id: \.self) { percent in
+                            checkButton("\(percent)%", on: ac.fanPercent == percent) { client.setAC(["fan_percent": percent]) }
+                        }
+                    }
+                }
             }
             Button { client.setAC(["sleep": !ac.sleep]) } label: {
                 ACTile(title: "Sleep", value: ac.sleep ? "On" : "Off", symbol: ac.sleep ? "moon.fill" : "moon",
@@ -234,24 +242,45 @@ private struct ACControls: View {
             pickTile(title: "Airflow", value: ACNames.swings[ac.swing ?? ""] ?? "--", symbol: "wind",
                      options: ac.swings.map { ($0, ACNames.swings[$0] ?? $0) }, current: ac.swing) {
                 client.setAC(["swing": $0])
+            } more: {
+                if ac.hasLouverV {
+                    Section("Hold up and down at") {
+                        ForEach(ACNames.louverPositions, id: \.0) { position in
+                            checkButton(position.1, on: ac.louverV == position.0) { client.setAC(["louver_v": position.0]) }
+                        }
+                    }
+                }
+                if ac.hasLouverH {
+                    Section("Hold side to side at") {
+                        ForEach(ACNames.louverSides, id: \.0) { position in
+                            checkButton(position.1, on: ac.louverH == position.0) { client.setAC(["louver_h": position.0]) }
+                        }
+                    }
+                }
             }
         }
     }
 
-    private func pickTile(title: String, value: String, symbol: String, options: [(String, String)],
-                          current: String?, pick: @escaping (String) -> Void) -> some View {
+    private func pickTile<More: View>(title: String, value: String, symbol: String, options: [(String, String)],
+                                      current: String?, pick: @escaping (String) -> Void,
+                                      @ViewBuilder more: () -> More = { EmptyView() }) -> some View {
         Menu {
             ForEach(options, id: \.0) { option in
-                Button { pick(option.0) } label: {
-                    if option.0 == current { Label(option.1, systemImage: "checkmark") } else { Text(option.1) }
-                }
+                checkButton(option.1, on: option.0 == current) { pick(option.0) }
             }
+            more()
         } label: {
             ACTile(title: title, value: value, symbol: symbol, active: false, chevron: true)
         }
         .menuStyle(.button)
         .buttonStyle(PressScale())
         .menuIndicator(.hidden)
+    }
+
+    private func checkButton(_ title: String, on: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            if on { Label(title, systemImage: "checkmark") } else { Text(title) }
+        }
     }
 
     private var extras: some View {
@@ -273,11 +302,24 @@ private struct ACControls: View {
                 }
                 Spacer(minLength: 0)
             }
+            if ac.hasPurifier || ac.hasBreezeAway {
+                HStack(spacing: 8) {
+                    if ac.hasPurifier {
+                        chip("Purify", symbol: "aqi.low", on: ac.purifier) { client.setAC(["purifier": !ac.purifier]) }
+                            .help("The unit's air purifier (ioniser)")
+                    }
+                    if ac.hasBreezeAway {
+                        chip("Breeze Away", symbol: "wind.circle", on: ac.breezeAway) { client.setAC(["breeze_away": !ac.breezeAway]) }
+                            .help("Steers the air away from you, so it does not blow straight on you")
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
             HStack {
                 timer
                 Spacer()
                 Toggle(isOn: Binding(get: { ac.dryCoil }, set: { client.setSetting("dry_coil", $0) })) {
-                    Text("Dry coil on off").font(.system(size: 12, weight: .semibold))
+                    Text("Dry coil after use").font(.system(size: 12, weight: .semibold))
                 }
                 .toggleStyle(.switch)
                 .controlSize(.mini)

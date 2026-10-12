@@ -26,6 +26,11 @@ class FakeAC:
         self.indoor_coil_temperature = 16.5
         self.error_code = 0
         self.filter_alert = False
+        self.purifier = self.breeze_away = False
+        self.vertical_swing_angle = self.horizontal_swing_angle = ac.Angle.OFF
+        self.supports_purifier = self.supports_breeze_away = True
+        self.supports_vertical_swing_angle = self.supports_horizontal_swing_angle = True
+        self.supports_custom_fan_speed = True
         self.online = True
         self.min_target_temperature, self.max_target_temperature = 16.0, 30.0
         self.supported_operation_modes = [MODES["fan"], MODES["dry"], MODES["cool"], MODES["auto"]]
@@ -349,3 +354,21 @@ def test_bad_settings_are_refused(tmp_path, monkeypatch):
     for name, value in (("dry_coil", "yes"), ("rm", True)):
         with pytest.raises(ACError):
             session.set_setting(name, value)
+
+
+def test_comfort_controls():
+    async def check():
+        session = online_session()
+        session.change({"purifier": True, "breeze_away": True, "louver_v": "2", "fan_percent": 35})
+        await session._flusher
+        m = session.message()
+        for bad in ({"fan_percent": 0}, {"fan_percent": 101}, {"fan_percent": "35"}, {"louver_v": "9"}, {"louver_h": 3}):
+            with pytest.raises(ACError):
+                session.change(bad)
+        session._device.supports_purifier = False
+        with pytest.raises(ACError):
+            session.change({"purifier": False})
+        return m
+    m = asyncio.run(check())
+    assert (m["purifier"], m["breeze_away"], m["louver_v"], m["fan_percent"]) == (True, True, "2", 35)
+    assert online_session().message()["fan_percent"] is None  # "max" is not an exact speed

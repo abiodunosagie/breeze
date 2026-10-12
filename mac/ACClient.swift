@@ -30,6 +30,18 @@ struct ACState: Decodable, Equatable {
     /// The unit's own error code, when it reports one.
     var fault: Int?
     var filterDue = false
+    var purifier = false
+    var breezeAway = false
+    /// Louver positions "1" to "5", or nil while they swing or are not set.
+    var louverV: String?
+    var louverH: String?
+    /// An exact fan speed, 1 to 100, when one is set instead of a named speed.
+    var fanPercent: Int?
+    var hasPurifier = false
+    var hasBreezeAway = false
+    var hasLouverV = false
+    var hasLouverH = false
+    var hasFanPercent = false
     /// Minutes left while the coil dries before switching off, or nil.
     var dryingMinutesLeft: Int?
     /// The user's choices kept by the helper.
@@ -56,6 +68,16 @@ struct ACState: Decodable, Equatable {
         case effort, phase, coil, fault
         case compressorHz = "compressor_hz"
         case filterDue = "filter_due"
+        case purifier
+        case breezeAway = "breeze_away"
+        case louverV = "louver_v"
+        case louverH = "louver_h"
+        case fanPercent = "fan_percent"
+        case hasPurifier = "has_purifier"
+        case hasBreezeAway = "has_breeze_away"
+        case hasLouverV = "has_louver_v"
+        case hasLouverH = "has_louver_h"
+        case hasFanPercent = "has_fan_percent"
         case dryingMinutesLeft = "drying_minutes_left"
         case settings
         case min, max, modes, fans, swings
@@ -94,6 +116,16 @@ struct ACState: Decodable, Equatable {
         coil = try? c.decode(Double.self, forKey: .coil)
         fault = try? c.decode(Int.self, forKey: .fault)
         filterDue = value(.filterDue, false)
+        purifier = value(.purifier, false)
+        breezeAway = value(.breezeAway, false)
+        louverV = try? c.decode(String.self, forKey: .louverV)
+        louverH = try? c.decode(String.self, forKey: .louverH)
+        fanPercent = try? c.decode(Int.self, forKey: .fanPercent)
+        hasPurifier = value(.hasPurifier, false)
+        hasBreezeAway = value(.hasBreezeAway, false)
+        hasLouverV = value(.hasLouverV, false)
+        hasLouverH = value(.hasLouverH, false)
+        hasFanPercent = value(.hasFanPercent, false)
         dryingMinutesLeft = try? c.decode(Int.self, forKey: .dryingMinutesLeft)
         let settings = value(.settings, [String: Bool]())
         dryCoil = settings["dry_coil"] ?? false

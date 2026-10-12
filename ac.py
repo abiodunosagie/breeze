@@ -58,7 +58,10 @@ MODES = {"auto": Mode.AUTO, "cool": Mode.COOL, "dry": Mode.DRY, "heat": Mode.HEA
 FANS = {"auto": Fan.AUTO, "silent": Fan.SILENT, "low": Fan.LOW, "medium": Fan.MEDIUM, "high": Fan.HIGH,
         "max": Fan.MAX}
 SWINGS = {"off": Swing.OFF, "vertical": Swing.VERTICAL, "horizontal": Swing.HORIZONTAL, "both": Swing.BOTH}
-TOGGLES = ("power", "eco", "turbo", "sleep", "flash")
+TOGGLES = ("power", "eco", "turbo", "sleep", "flash", "purifier", "breeze_away")
+Angle = AirConditioner.SwingAngle
+# Louver positions, 1 is the top (or the left).
+ANGLES = {"1": Angle.POS_1, "2": Angle.POS_2, "3": Angle.POS_3, "4": Angle.POS_4, "5": Angle.POS_5}
 # Below this share of the fastest compressor speed seen, the AC is holding the room, not cooling it.
 HOLDING_SHARE = 0.25
 # Starting guess for the compressor's top speed; raised as faster speeds are seen.
@@ -72,12 +75,18 @@ FEATURES: dict[str, Callable[[Any], bool]] = {
     "eco": lambda dev: bool(dev.supports_ieco or dev.supports_eco),
     "turbo": lambda dev: bool(dev.supports_turbo),
     "flash": lambda dev: bool(dev.supports_flash),
+    "purifier": lambda dev: bool(dev.supports_purifier),
+    "breeze_away": lambda dev: bool(dev.supports_breeze_away),
 }
 # Settings picked from a list: the names, what this unit supports, and the message if not.
 CHOICES: dict[str, tuple[dict[str, Any], Callable[[Any], list], str]] = {
     "mode": (MODES, lambda dev: dev.supported_operation_modes, "This air conditioner does not have that mode."),
     "fan": (FANS, lambda dev: dev.supported_fan_speeds, "This air conditioner does not have that fan speed."),
     "swing": (SWINGS, lambda dev: dev.supported_swing_modes, "This air conditioner does not have that airflow."),
+    "louver_v": (ANGLES, lambda dev: list(ANGLES.values()) if dev.supports_vertical_swing_angle else [],
+                 "This air conditioner cannot hold its louvers there."),
+    "louver_h": (ANGLES, lambda dev: list(ANGLES.values()) if dev.supports_horizontal_swing_angle else [],
+                 "This air conditioner cannot hold its louvers there."),
 }
 
 
@@ -181,6 +190,13 @@ class ACSession:
             "sleep": bool(dev.sleep),
             "flash": bool(dev.flash),
             "display": bool(dev.display_on),
+            "purifier": bool(dev.purifier),
+            "breeze_away": bool(dev.breeze_away),
+            "louver_v": _name(ANGLES, dev.vertical_swing_angle),
+            "louver_h": _name(ANGLES, dev.horizontal_swing_angle),
+            # The exact fan speed, when one of 1 to 100 is set rather than a named speed.
+            # (named speeds are numbers too, so only a plain int counts).
+            "fan_percent": dev.fan_speed if type(dev.fan_speed) is int and 0 < dev.fan_speed <= 100 else None,
             # Self clean runs with the unit off; any change but power would end it.
             "cleaning": bool(dev.self_clean_active),
             "cleaning_minutes": self._cleaning_minutes(),
@@ -206,6 +222,11 @@ class ACSession:
             "has_turbo": bool(dev.supports_turbo),
             "has_display": bool(dev.supports_display_control),
             "has_flash": bool(dev.supports_flash),
+            "has_purifier": bool(dev.supports_purifier),
+            "has_breeze_away": bool(dev.supports_breeze_away),
+            "has_louver_v": bool(dev.supports_vertical_swing_angle),
+            "has_louver_h": bool(dev.supports_horizontal_swing_angle),
+            "has_fan_percent": bool(dev.supports_custom_fan_speed),
             "timer_choices": list(TIMER_MINUTES),
             "off_in": self._minutes_left(),
         }
@@ -433,6 +454,11 @@ class ACSession:
                         dev.min_target_temperature <= value <= dev.max_target_temperature):
                     raise ACError(f"Choose {dev.min_target_temperature:g} to {dev.max_target_temperature:g} °C.")
                 value = float(math.floor(value + 0.5))  # whole degrees, halves round up
+            elif name == "fan_percent":
+                if not dev.supports_custom_fan_speed:
+                    raise ACError("This air conditioner has no exact fan speeds.")
+                if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 100:
+                    raise ACError("Choose a fan speed from 1 to 100%.")
             elif name in CHOICES:
                 table, supported, problem = CHOICES[name]
                 if not isinstance(value, str) or table.get(value) not in supported(dev):
@@ -507,6 +533,16 @@ class ACSession:
                 dev.sleep = value
             elif name == "flash":
                 dev.flash = value
+            elif name == "purifier":
+                dev.purifier = value
+            elif name == "breeze_away":
+                dev.breeze_away = value
+            elif name == "louver_v":
+                dev.vertical_swing_angle = ANGLES[value]
+            elif name == "louver_h":
+                dev.horizontal_swing_angle = ANGLES[value]
+            elif name == "fan_percent":
+                dev.fan_speed = value
 
     # ------------------------------------------------------------ timer
 
