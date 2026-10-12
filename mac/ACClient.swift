@@ -55,6 +55,8 @@ struct ACState: Decodable, Equatable {
     var sleepCurve: SleepCurveInfo?
     var sleepCurveChoices: [Int] = []
     var sleepCurveEnd = "restore"
+    /// How well it cools over weeks: the room-to-coil gap today, lately and usually.
+    var health: HealthInfo?
     /// Electricity: power now, kWh today and this month, and kWh for each of the last 24 hours.
     var powerW: Int?
     var todayKWh: Double = 0
@@ -112,6 +114,7 @@ struct ACState: Decodable, Equatable {
         case schedules
         case sleepCurve = "sleep_curve"
         case sleepCurveChoices = "sleep_curve_choices"
+        case health
         case powerW = "power_w"
         case todayKWh = "today_kwh"
         case monthKWh = "month_kwh"
@@ -175,6 +178,7 @@ struct ACState: Decodable, Equatable {
         schedules = value(.schedules, [ACSchedule]())
         sleepCurve = try? c.decode(SleepCurveInfo.self, forKey: .sleepCurve)
         sleepCurveChoices = value(.sleepCurveChoices, [Int]())
+        health = try? c.decode(HealthInfo.self, forKey: .health)
         dryingMinutesLeft = try? c.decode(Int.self, forKey: .dryingMinutesLeft)
         let settings = (try? c.decode(Settings.self, forKey: .settings)) ?? Settings()
         dryCoil = settings.dryCoil
@@ -245,6 +249,14 @@ struct ACSchedule: Codable, Equatable, Identifiable {
     var target: Double?
     var mode: String?
     var fan: String?
+}
+
+struct HealthInfo: Decodable, Equatable {
+    var gap: Double?
+    var recent: Double?
+    var usual: Double?
+    /// learning, good or low.
+    var state: String
 }
 
 struct SleepCurveInfo: Decodable, Equatable {

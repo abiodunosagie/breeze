@@ -23,10 +23,11 @@ from msmart.discover import Discover
 
 from care import Care
 from energy import EnergyLog
+from health import Health
 from sleepcurve import LENGTHS as CURVE_LENGTHS
 from sleepcurve import SleepCurve
 from store import (AC_FILE, CARE_FILE, CONFIG_DIR, DEFAULT_SETTINGS, DRY_DONE_WITHIN, DRY_MAX_MINUTES, ENERGY_FILE,  # noqa: F401
-                   OUTAGE_SECONDS, SCHEDULE_FILE, SETTINGS_FILE, SLEEP_FILE, WET_MODES, check_setting, load_settings,
+                   HEALTH_FILE, OUTAGE_SECONDS, SCHEDULE_FILE, SETTINGS_FILE, SLEEP_FILE, WET_MODES, check_setting, load_settings,
                    save_link, write_private)
 from timetable import ScheduleError, Timetable, changes_for
 
@@ -57,6 +58,8 @@ Angle = AirConditioner.SwingAngle
 ANGLES = {"1": Angle.POS_1, "2": Angle.POS_2, "3": Angle.POS_3, "4": Angle.POS_4, "5": Angle.POS_5}
 # Below this share of the fastest compressor speed seen, the AC is holding the room, not cooling it.
 HOLDING_SHARE = 0.25
+# At or above this share, the compressor is working hard: the readings the health check trusts.
+HARD_SHARE = 0.5
 # Starting guess for the compressor's top speed; raised as faster speeds are seen.
 COMPRESSOR_HZ_GUESS = 60
 # The Timer button: turn the AC off after this many minutes.
@@ -132,6 +135,7 @@ class ACSession:
         self._cleaner: asyncio.Task[None] | None = None
         self.timetable = Timetable(SCHEDULE_FILE, write_private)
         self.curve = SleepCurve(SLEEP_FILE, write_private)
+        self.health = Health(HEALTH_FILE, write_private)
         # While drying the coil: when it started and the mode to go back to, for next time.
         self._drying: dict[str, Any] | None = None
         # Power cuts. Loop time stops while the Mac sleeps, so a sleeping Mac never looks like one.
@@ -184,6 +188,7 @@ class ACSession:
             "drying_minutes_left": self._drying_minutes_left(),
             **self.energy.summary(),
             **self.care.summary(),
+            **self.health.summary(),
         }
         # Changes on their way show already, so the app never snaps back meanwhile.
         for waiting in (self._inflight, self._pending):
@@ -260,6 +265,7 @@ class ACSession:
     async def close(self) -> None:
         self.energy.save()
         self.care.save()
+        self.health.save()
         if self._off_timer:
             self._off_timer.cancel()
         tasks = [task for task in (self._poller, self._flusher, self._cleaner) if task]
@@ -421,6 +427,11 @@ class ACSession:
         elif news == "filter_due":
             hours = round(self.care.filter_hours)
             self._send_event("filter", f"Time to wash the filter: about {hours} hours of cooling since the last wash.")
+        # Hard cooling only: the compressor at half its top speed or more, not drying the coil.
+        hard = (_name(MODES, dev.operational_mode) == "cool" and self._phase(dev) == "working" and self._drying is None
+                and (dev.compressor_frequency or 0) >= HARD_SHARE * self._top_hz)
+        if self.health.record(bool(dev.power_state), hard, dev.indoor_temperature, dev.indoor_coil_temperature):
+            self._send_event("health", self.health.message_for_low())
         if self._clean_allowed(dev) and self.care.clean_due(self.settings["auto_clean"]):
             self.care.asked_for_clean()
             self._cleaner = asyncio.get_running_loop().create_task(self._start_clean())
@@ -468,7 +479,7 @@ class ACSession:
             except ACError as exc:
                 self._tell(f"The {entry['time']} schedule did not run: {exc}")
         for entry in missed:
-            self._tell(f"Breeze could not reach the air conditioner at {entry['time']}, so that schedule did not run.")
+            self._tell(f"The {entry['time']} schedule did not run. Breeze was not running or the air conditioner was away.")
 
     def start_sleep_curve(self, minutes: object) -> None:
         """Start Breeze's curve for `minutes`, or stop it with None."""
@@ -504,6 +515,9 @@ class ACSession:
             return
         if self.curve.finished():
             state = self.curve.state
+            if self.curve.ended_unseen():
+                self._stop_curve("The sleep curve ended while Breeze was asleep. The setting was left as it was.")
+                return
             self.curve.stop()
             ending = {"power": False} if state["end"] == "off" else {"target": state["start_target"]}
             try:
@@ -524,6 +538,8 @@ class ACSession:
         """Switch off, the way Breeze does it: dry the coil first if the user asked for that.
         Only Breeze's own power offs come here (button, timer); an off from the hand remote never does."""
         dev = self._device
+        if self.curve.active:
+            self._stop_curve()  # the timer's off, too, ends the night
         if self._drying is not None:
             self._finish_drying()  # already drying (the timer fired meanwhile): off now, as it was
             return

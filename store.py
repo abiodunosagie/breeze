@@ -16,6 +16,7 @@ ENERGY_FILE = CONFIG_DIR / "energy.json"
 CARE_FILE = CONFIG_DIR / "care.json"
 SCHEDULE_FILE = CONFIG_DIR / "schedules.json"
 SLEEP_FILE = CONFIG_DIR / "sleep.json"
+HEALTH_FILE = CONFIG_DIR / "health.json"
 MAX_PRICE = 100_000.0  # naira per kWh; anything above is a typo
 
 # The user's choices, all off until turned on.

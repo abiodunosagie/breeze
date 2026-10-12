@@ -19,6 +19,9 @@ LENGTHS = (360, 420, 480, 540)  # minutes
 ENDS = ("restore", "off")
 # (minutes after the start, degrees above the starting setting)
 STEPS = ((60, 1.0), (120, 2.0))
+# Seen ending later than this (the Mac slept through the morning), the end is skipped: switching
+# the AC off hours late, with someone sitting under it, would be worse than doing nothing.
+LATE_END_SECONDS = 15 * 60
 
 
 class SleepCurve:
@@ -68,6 +71,11 @@ class SleepCurve:
 
     def finished(self) -> bool:
         return self.state is not None and self._elapsed_minutes() >= self.state["minutes"]
+
+    def ended_unseen(self) -> bool:
+        """Finished long enough ago that its end should not be acted on now."""
+        assert self.state is not None
+        return (self._elapsed_minutes() - self.state["minutes"]) * 60 > LATE_END_SECONDS
 
     def offset(self) -> float:
         elapsed = self._elapsed_minutes()

@@ -117,3 +117,27 @@ def test_turned_off_by_the_remote_stops_it(tmp_path):
     session._device.power_state = False
     session._follow_curve(session._device)
     assert not session.curve.active
+
+
+def test_an_end_seen_hours_late_is_skipped(tmp_path):
+    async def check():
+        session, clock = session_with_curve(tmp_path)
+        session.settings["sleep_curve_end"] = "off"
+        session.start_sleep_curve(360)
+        clock.advance(61)
+        session._follow_curve(session._device)
+        session._pending.clear()
+        clock.advance(300 + 60)  # the Mac slept through the end
+        session._follow_curve(session._device)
+        return session._pending, session.curve.active, session.notice
+    pending, active, notice = asyncio.run(check())
+    assert pending == {} and not active and "asleep" in notice
+
+
+def test_the_off_timer_ends_the_curve_too(tmp_path):
+    async def check():
+        session, _ = session_with_curve(tmp_path)
+        session.start_sleep_curve(420)
+        session._turn_off()
+        return session.curve.active, "target" in session._pending
+    assert asyncio.run(check()) == (False, False)

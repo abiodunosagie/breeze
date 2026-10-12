@@ -78,6 +78,7 @@ struct EnergyLine: View {
             Button("Filter Washed (\(Int(ac.filterHours.rounded())) of \(Int(ac.filterAfterHours)) hours)") {
                 client.filterWashed()
             }
+            if let health = ac.health { Text(Self.healthLine(health)) }
             Divider()
             Button(ac.pricePerKWh > 0 ? "Electricity Price: \(Self.naira(ac.pricePerKWh)) per kWh…" : "Set Electricity Price…") {
                 priceText = ac.pricePerKWh > 0 ? String(format: "%g", ac.pricePerKWh) : ""
@@ -135,6 +136,13 @@ struct EnergyLine: View {
         }
         guard let value = Double(cleaned), value.isFinite, value >= 0 else { return nil }
         return value
+    }
+
+    /// Read only, for the curious: how far below the room the coil gets while cooling hard.
+    static func healthLine(_ h: HealthInfo) -> String {
+        let now = (h.recent ?? h.gap).map { String(format: "%.1f°", $0) } ?? "not measured yet"
+        guard let usual = h.usual else { return "Cooling Gap: \(now), still learning the usual" }
+        return "Cooling Gap: \(now), usually " + String(format: "%.1f°", usual)
     }
 
     static func naira(_ amount: Double) -> String {
