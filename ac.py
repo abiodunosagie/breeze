@@ -23,8 +23,12 @@ from msmart.discover import Discover
 
 from care import Care
 from energy import EnergyLog
+from sleepcurve import LENGTHS as CURVE_LENGTHS
+from sleepcurve import SleepCurve
 from store import (AC_FILE, CARE_FILE, CONFIG_DIR, DEFAULT_SETTINGS, DRY_DONE_WITHIN, DRY_MAX_MINUTES, ENERGY_FILE,  # noqa: F401
-                   OUTAGE_SECONDS, SETTINGS_FILE, WET_MODES, check_setting, load_settings, save_link, write_private)
+                   OUTAGE_SECONDS, SCHEDULE_FILE, SETTINGS_FILE, SLEEP_FILE, WET_MODES, check_setting, load_settings,
+                   save_link, write_private)
+from timetable import ScheduleError, Timetable, changes_for
 
 POLL_SECONDS = 20.0
 # After this many silent polls in a row, look for the AC again (the router may have moved it).
@@ -126,6 +130,8 @@ class ACSession:
         self.energy = EnergyLog(ENERGY_FILE, write_private)
         self.care = Care(CARE_FILE, write_private)
         self._cleaner: asyncio.Task[None] | None = None
+        self.timetable = Timetable(SCHEDULE_FILE, write_private)
+        self.curve = SleepCurve(SLEEP_FILE, write_private)
         # While drying the coil: when it started and the mode to go back to, for next time.
         self._drying: dict[str, Any] | None = None
         # Power cuts. Loop time stops while the Mac sleeps, so a sleeping Mac never looks like one.
@@ -203,6 +209,9 @@ class ACSession:
             "has_louver_h": bool(dev.supports_horizontal_swing_angle),
             "has_fan_percent": bool(dev.supports_custom_fan_speed),
             "has_self_clean": bool(dev.supports_self_clean),
+            "schedules": self.timetable.entries,
+            "sleep_curve": self.curve.summary(),
+            "sleep_curve_choices": list(CURVE_LENGTHS),
             "timer_choices": list(TIMER_MINUTES),
             "off_in": self._minutes_left(),
         }
@@ -344,6 +353,8 @@ class ACSession:
             self._check_drying(dev)
         self._remember_running()
         self._look_after(dev)
+        self._run_schedules()
+        self._follow_curve(dev)
         if self._pending and (self._flusher is None or self._flusher.done()):
             self._flusher = asyncio.get_running_loop().create_task(self._flush())
 
@@ -439,6 +450,73 @@ class ACSession:
     def filter_cleaned(self) -> None:
         self.care.filter_cleaned()
         self._on_change()
+
+    # ------------------------------------------------------------ schedules and the sleep curve
+
+    def set_schedules(self, entries: object) -> None:
+        try:
+            self.timetable.replace(entries)
+        except ScheduleError as exc:
+            raise ACError(str(exc)) from None
+        self._on_change()
+
+    def _run_schedules(self) -> None:
+        run, missed = self.timetable.due()
+        for entry in run:
+            try:
+                self.change(changes_for(entry))
+            except ACError as exc:
+                self._tell(f"The {entry['time']} schedule did not run: {exc}")
+        for entry in missed:
+            self._tell(f"Breeze could not reach the air conditioner at {entry['time']}, so that schedule did not run.")
+
+    def start_sleep_curve(self, minutes: object) -> None:
+        """Start Breeze's curve for `minutes`, or stop it with None."""
+        if minutes is None:
+            if self.curve.active:
+                self.curve.stop()
+                self._on_change()
+            return
+        dev = self._device
+        if minutes not in CURVE_LENGTHS:
+            raise ACError("Choose one of the sleep curve lengths.")
+        if dev is None or self.status != "online" or not dev.power_state:
+            raise ACError("Turn the air conditioner on first.")
+        mode = self._pending.get("mode") or _name(MODES, dev.operational_mode)
+        if mode not in ("cool", "auto"):
+            raise ACError("The sleep curve works while cooling.")
+        if dev.sleep or self._pending.get("sleep"):
+            raise ACError("Turn the unit's own Sleep off first.")
+        start = self._pending.get("target", dev.target_temperature)
+        self.curve.start(start, minutes, self.settings["sleep_curve_end"])
+        self._on_change()
+
+    def _stop_curve(self, why: str = "The sleep curve stopped.") -> None:
+        self.curve.stop()
+        self._tell(why)
+
+    def _follow_curve(self, dev: Any) -> None:
+        """Keep the setting where the curve wants it; stop if the AC was turned off or to its own Sleep."""
+        if not self.curve.active:
+            return
+        if not dev.power_state or dev.sleep:
+            self._stop_curve()
+            return
+        if self.curve.finished():
+            state = self.curve.state
+            self.curve.stop()
+            ending = {"power": False} if state["end"] == "off" else {"target": state["start_target"]}
+            try:
+                self.change(ending)
+            except ACError as exc:
+                self._tell(f"The sleep curve ended, but: {exc}")
+                return
+            self._tell("Good morning. The sleep curve has ended.")
+            return
+        wanted = self.curve.wanted(dev.max_target_temperature)
+        if dev.target_temperature != wanted and "target" not in self._pending and "target" not in self._inflight:
+            self._pending["target"] = wanted
+            self._kick()
 
     # ------------------------------------------------------------ drying the coil
 
@@ -550,7 +628,10 @@ class ACSession:
             else:
                 raise ACError("Unknown setting.")
             checked[name] = value
-        # Checked, so a refused request never ends the drying.
+        # Checked, so a refused request never ends the drying or the sleep curve.
+        if self.curve.active and (checked.get("power") is False or checked.get("sleep") is True
+                                  or "target" in checked or "mode" in checked):
+            self._stop_curve()  # the user took over
         if self._drying is not None:
             self._cancel_drying(checked)
         power = checked.pop("power", None)

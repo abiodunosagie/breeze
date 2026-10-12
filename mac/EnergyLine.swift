@@ -7,6 +7,7 @@ struct EnergyLine: View {
     let ac: ACState
     @State private var editingPrice = false
     @State private var priceText = ""
+    @State private var editingSchedules = false
 
     private static let maxPrice = 100_000.0  // MAX_PRICE in store.py
     private static let barsSize = CGSize(width: 72, height: 24)
@@ -63,6 +64,10 @@ struct EnergyLine: View {
                                                                     set: { client.setAC(["breeze_away": $0]) }))
             }
             Divider()
+            Button(ac.schedules.isEmpty ? "Schedules…" : "Schedules (\(ac.schedules.filter(\.enabled).count) on)…") {
+                editingSchedules = true
+            }
+            Divider()
             Toggle("Dry the Coil After Cooling", isOn: Binding(get: { ac.dryCoil }, set: { client.setSetting("dry_coil", $0) }))
             Toggle("Switch Back On After a Power Cut", isOn: Binding(get: { ac.restoreAfterOutage },
                                                                     set: { client.setSetting("restore_after_outage", $0) }))
@@ -89,7 +94,10 @@ struct EnergyLine: View {
         .buttonStyle(PressScale())
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("More: the unit's light, Breeze Away, drying the coil, power cuts, self clean, filter, electricity price")
+        .popover(isPresented: $editingSchedules, arrowEdge: .bottom) {
+            ScheduleEditor(client: client, ac: ac) { editingSchedules = false }
+        }
+        .help("More: schedules, the unit's light, Breeze Away, drying the coil, power cuts, self clean, filter, electricity price")
     }
 
     private var priceForm: some View {

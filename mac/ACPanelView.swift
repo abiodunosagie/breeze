@@ -237,12 +237,7 @@ private struct ACControls: View {
                     }
                 }
             }
-            Button { client.setAC(["sleep": !ac.sleep]) } label: {
-                ACTile(title: "Sleep", value: ac.sleep ? "On" : "Off", symbol: ac.sleep ? "moon.fill" : "moon",
-                       active: ac.sleep, chevron: false)
-            }
-            .buttonStyle(PressScale())
-            .help("Sleep mode raises the temperature slowly through the night")
+            sleepTile
             pickTile(title: "Airflow", value: ACNames.swings[ac.swing ?? ""] ?? "--", symbol: "wind",
                      options: ac.swings.map { ($0, ACNames.swings[$0] ?? $0) }, current: ac.swing) {
                 client.setAC(["swing": $0])
@@ -263,6 +258,34 @@ private struct ACControls: View {
                 }
             }
         }
+    }
+
+    /// The unit's own Sleep, or Breeze's curve: a degree up after an hour, another after two, then hold.
+    private var sleepTile: some View {
+        let curve = ac.sleepCurve
+        return Menu {
+            checkButton("Unit's Sleep Mode", on: ac.sleep) { client.setAC(["sleep": !ac.sleep]) }
+            Section("Breeze's sleep curve") {
+                ForEach(ac.sleepCurveChoices, id: \.self) { minutes in
+                    Button("For \(ACNames.duration(minutes))") { client.setSleepCurve(minutes) }
+                }
+                if curve != nil { Button("Stop the Curve") { client.setSleepCurve(nil) } }
+            }
+            Section("In the morning") {
+                checkButton("Back to the Starting Setting", on: ac.sleepCurveEnd == "restore") {
+                    client.setSetting("sleep_curve_end", "restore")
+                }
+                checkButton("Switch Off", on: ac.sleepCurveEnd == "off") { client.setSetting("sleep_curve_end", "off") }
+            }
+        } label: {
+            ACTile(title: "Sleep", value: curve.map { "To \($0.endsAt)" } ?? (ac.sleep ? "On" : "Off"),
+                   symbol: ac.sleep || curve != nil ? "moon.fill" : "moon", active: ac.sleep || curve != nil, chevron: true)
+        }
+        .menuStyle(.button)
+        .buttonStyle(PressScale())
+        .menuIndicator(.hidden)
+        .help(curve.map { "Sleep curve: +\(Int($0.offset))° now, ends at \($0.endsAt)" }
+              ?? "The unit's Sleep mode, or Breeze's gentler sleep curve")
     }
 
     private func pickTile<More: View>(title: String, value: String, symbol: String, options: [(String, String)],

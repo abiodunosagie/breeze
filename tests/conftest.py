@@ -19,4 +19,6 @@ def private_files(tmp_path, monkeypatch):
         monkeypatch.setattr(module, "SETTINGS_FILE", folder / "settings.json")
         monkeypatch.setattr(module, "ENERGY_FILE", folder / "energy.json")
         monkeypatch.setattr(module, "CARE_FILE", folder / "care.json")
+        monkeypatch.setattr(module, "SCHEDULE_FILE", folder / "schedules.json")
+        monkeypatch.setattr(module, "SLEEP_FILE", folder / "sleep.json")
     return folder

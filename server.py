@@ -93,6 +93,14 @@ async def _ac_filter_cleaned(session: Session, _ws: web.WebSocketResponse, _mess
     session.ac.filter_cleaned()
 
 
+async def _ac_schedules(session: Session, _ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
+    session.ac.set_schedules(message.get("entries"))
+
+
+async def _ac_sleep_curve(session: Session, _ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
+    session.ac.start_sleep_curve(message.get("minutes"))
+
+
 HANDLERS: dict[str, Handler] = {
     "ac_get": _ac_get,
     "ac_set": _ac_set,
@@ -101,6 +109,8 @@ HANDLERS: dict[str, Handler] = {
     "ac_setting": _ac_setting,
     "ac_restore": _ac_restore,
     "ac_filter_cleaned": _ac_filter_cleaned,
+    "ac_schedules": _ac_schedules,
+    "ac_sleep_curve": _ac_sleep_curve,
 }
 # These wait on the AC; run them beside the read loop so other buttons keep working.
 BACKGROUND_HANDLERS = frozenset({"ac_display"})

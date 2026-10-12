@@ -105,6 +105,16 @@ def test_a_clean_stopped_early_does_not_count(tmp_path):
     assert c.clean_hours > 49
 
 
+def test_a_clean_that_ended_unseen_does_not_count(tmp_path):
+    c, clock = care_at("2026-10-12T10:00:00", tmp_path)
+    c.clean_hours = 50
+    c.asked_for_clean()
+    run_for(c, clock, 15, power=False, wet=True, cleaning=True)
+    clock.advance(30)  # a power cut: no readings, then the AC answers again, off
+    assert c.record(power=False, wet=True, cleaning=False) is None
+    assert c.clean_hours == 50
+
+
 def test_saved_and_loaded_and_bad_file(tmp_path):
     saved = {}
     c, clock = care_at("2026-10-12T10:00:00", tmp_path, write=lambda path, data: saved.update(data))

@@ -16,7 +16,7 @@ from typing import Any, Callable
 
 # A self clean after this many wet hours, when the user turned automatic cleaning on.
 CLEAN_AFTER_HOURS = 40.0
-# Midea's manuals ask for a filter wash about every two weeks of use.
+# Breeze's own reminder to wash the filter, in the same wet hours.
 FILTER_AFTER_HOURS = 150.0
 MAX_GAP_SECONDS = 120.0
 SAVE_EVERY_SECONDS = 300.0
@@ -74,13 +74,15 @@ class Care:
     def record(self, power: bool, wet: bool, cleaning: bool) -> str | None:
         """One fresh reading. Returns "clean_done" or "filter_due" when there is news for the user."""
         now = self._clock()
+        # A clean that ended while nobody watched (a power cut, a sleeping Mac) may not have finished.
+        watched = self._last_tick is not None and now - self._last_tick <= MAX_GAP_SECONDS
         if self._last_tick is not None and power and wet:
             gap = min(max(now - self._last_tick, 0.0), MAX_GAP_SECONDS) / 3600
             self.clean_hours += gap
             self.filter_hours += gap
         self._last_tick = now
         self._off_since = None if power else (self._off_since if self._off_since is not None else now)
-        news = self._follow_clean(cleaning, now)
+        news = self._follow_clean(cleaning, now, watched)
         if news is None and self.filter_hours >= FILTER_AFTER_HOURS and not self.filter_told:
             self.filter_told = True
             news = "filter_due"
@@ -88,7 +90,7 @@ class Care:
             self.save()
         return news
 
-    def _follow_clean(self, cleaning: bool, now: float) -> str | None:
+    def _follow_clean(self, cleaning: bool, now: float, watched: bool) -> str | None:
         if cleaning:
             if self._clean_started is None:
                 self._clean_started = now
@@ -99,7 +101,7 @@ class Care:
         ran = (now - self._clean_started) / 60
         self._clean_started = None
         by_breeze, self._breeze_cleaning = self._breeze_cleaning, False
-        if ran < CLEAN_COUNTS_AFTER_MINUTES:
+        if ran < CLEAN_COUNTS_AFTER_MINUTES or not watched:
             return None
         self.clean_hours = 0.0  # a full clean from the hand remote counts too
         return "clean_done" if by_breeze else None

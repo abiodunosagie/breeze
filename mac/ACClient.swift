@@ -50,6 +50,11 @@ struct ACState: Decodable, Equatable {
     var filterAfterHours: Double = 150
     var filterWashDue = false
     var autoClean = false
+    /// The user's schedules, and Breeze's sleep curve while it runs.
+    var schedules: [ACSchedule] = []
+    var sleepCurve: SleepCurveInfo?
+    var sleepCurveChoices: [Int] = []
+    var sleepCurveEnd = "restore"
     /// Electricity: power now, kWh today and this month, and kWh for each of the last 24 hours.
     var powerW: Int?
     var todayKWh: Double = 0
@@ -104,6 +109,9 @@ struct ACState: Decodable, Equatable {
         case cleanAfterHours = "clean_after_hours"
         case filterAfterHours = "filter_after_hours"
         case filterWashDue = "filter_wash_due"
+        case schedules
+        case sleepCurve = "sleep_curve"
+        case sleepCurveChoices = "sleep_curve_choices"
         case powerW = "power_w"
         case todayKWh = "today_kwh"
         case monthKWh = "month_kwh"
@@ -164,12 +172,16 @@ struct ACState: Decodable, Equatable {
         cleanAfterHours = value(.cleanAfterHours, 40.0)
         filterAfterHours = value(.filterAfterHours, 150.0)
         filterWashDue = value(.filterWashDue, false)
+        schedules = value(.schedules, [ACSchedule]())
+        sleepCurve = try? c.decode(SleepCurveInfo.self, forKey: .sleepCurve)
+        sleepCurveChoices = value(.sleepCurveChoices, [Int]())
         dryingMinutesLeft = try? c.decode(Int.self, forKey: .dryingMinutesLeft)
         let settings = (try? c.decode(Settings.self, forKey: .settings)) ?? Settings()
         dryCoil = settings.dryCoil
         pricePerKWh = settings.price
         restoreAfterOutage = settings.restore
         autoClean = settings.autoClean
+        sleepCurveEnd = settings.sleepCurveEnd
         let event = try? c.decode([String: String].self, forKey: .event)
         eventKind = event?["kind"]
         eventText = event?["text"]
@@ -201,11 +213,13 @@ struct ACState: Decodable, Equatable {
         var price = 0.0
         var restore = false
         var autoClean = false
+        var sleepCurveEnd = "restore"
         enum CodingKeys: String, CodingKey {
             case dryCoil = "dry_coil"
             case price = "price_per_kwh"
             case restore = "restore_after_outage"
             case autoClean = "auto_clean"
+            case sleepCurveEnd = "sleep_curve_end"
         }
         init() {}
         init(from decoder: Decoder) throws {
@@ -214,7 +228,35 @@ struct ACState: Decodable, Equatable {
             price = (try? c.decode(Double.self, forKey: .price)) ?? 0
             restore = (try? c.decode(Bool.self, forKey: .restore)) ?? false
             autoClean = (try? c.decode(Bool.self, forKey: .autoClean)) ?? false
+            sleepCurveEnd = (try? c.decode(String.self, forKey: .sleepCurveEnd)) ?? "restore"
         }
+    }
+}
+
+/// One schedule: on (optionally to a temperature and mode) or off, at a time on chosen days.
+struct ACSchedule: Codable, Equatable, Identifiable {
+    var id: String
+    var enabled = true
+    /// 0 is Monday, as the helper counts.
+    var days: [Int]
+    /// "HH:MM", the Mac's local time.
+    var time: String
+    var power: Bool
+    var target: Double?
+    var mode: String?
+    var fan: String?
+}
+
+struct SleepCurveInfo: Decodable, Equatable {
+    /// Degrees above the starting setting right now.
+    var offset: Double
+    /// "HH:MM" the curve ends.
+    var endsAt: String
+    var minutesLeft: Int
+    enum CodingKeys: String, CodingKey {
+        case offset
+        case endsAt = "ends_at"
+        case minutesLeft = "minutes_left"
     }
 }
 
@@ -323,6 +365,13 @@ final class ACClient: ObservableObject {
     /// On again with the settings it had when last seen running.
     func restoreAC() { send(["type": "ac_restore"]) }
     func filterWashed() { send(["type": "ac_filter_cleaned"]) }
+    /// Start Breeze's sleep curve for `minutes`, or stop it with nil.
+    func setSleepCurve(_ minutes: Int?) { send(["type": "ac_sleep_curve", "minutes": minutes as Any? ?? NSNull()]) }
+    /// Replace the whole list of schedules; the helper checks each.
+    func saveSchedules(_ entries: [ACSchedule]) {
+        guard let data = try? JSONEncoder().encode(entries), let list = try? JSONSerialization.jsonObject(with: data) else { return }
+        send(["type": "ac_schedules", "entries": list])
+    }
     /// One of the user's choices the helper keeps, like "dry_coil".
     func setSetting(_ name: String, _ value: Any) { send(["type": "ac_setting", "name": name, "value": value]) }
     /// Turn the AC off after `minutes`, or cancel the timer with nil.
