@@ -22,4 +22,5 @@ def private_files(tmp_path, monkeypatch):
         monkeypatch.setattr(module, "SCHEDULE_FILE", folder / "schedules.json")
         monkeypatch.setattr(module, "SLEEP_FILE", folder / "sleep.json")
         monkeypatch.setattr(module, "HEALTH_FILE", folder / "health.json")
+    monkeypatch.setattr(store, "PHONE_FILE", folder / "phone.json")  # only store names it
     return folder

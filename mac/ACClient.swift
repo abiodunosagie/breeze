@@ -244,6 +244,12 @@ struct ACSchedule: Codable, Equatable, Identifiable {
     var fan: String?
 }
 
+struct PhoneInfo: Decodable, Equatable {
+    var enabled: Bool
+    var running: Bool
+    var url: String?
+}
+
 struct ACEvent: Decodable, Equatable {
     var id: Int
     var kind: String
@@ -295,6 +301,8 @@ final class ACClient: ObservableObject {
     @Published var toast: String?
     /// Counts the helper refusing a list of schedules, so an open editor keeps the edits.
     @Published private(set) var schedulesRefused = 0
+    /// The phone remote, as the helper reports it to the Mac (never to phones: the url holds the token).
+    @Published private(set) var phone: PhoneInfo?
 
     /// Called when the link drops, before reconnecting. Lets the app restart the helper.
     var onLinkLost: (() async -> Void)?
@@ -349,6 +357,8 @@ final class ACClient: ObservableObject {
                 }
                 ac = next
             }
+        case "phone":
+            phone = try? JSONDecoder().decode(PhoneInfo.self, from: data)
         case "error":
             if let text = envelope.message { show(text) }
             if envelope.for == "ac_schedules" { schedulesRefused += 1 }
@@ -384,6 +394,9 @@ final class ACClient: ObservableObject {
     /// On again with the settings it had when last seen running.
     func restoreAC() { send(["type": "ac_restore"]) }
     func filterWashed() { send(["type": "ac_filter_cleaned"]) }
+    func refreshPhone() { send(["type": "ac_phone"]) }
+    func setPhone(enabled: Bool) { send(["type": "ac_phone_set", "enabled": enabled]) }
+    func resetPhone() { send(["type": "ac_phone_reset"]) }
     /// Start Breeze's sleep curve for `minutes`, or stop it with nil.
     func setSleepCurve(_ minutes: Int?) { send(["type": "ac_sleep_curve", "minutes": minutes as Any? ?? NSNull()]) }
     /// Replace the whole list of schedules; the helper checks each.

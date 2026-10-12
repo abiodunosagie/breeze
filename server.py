@@ -19,6 +19,7 @@ from typing import Any
 from aiohttp import WSMsgType, web
 
 from ac import ACError, ACSession
+from phone import PHONE_CHANGES, PhoneAccess, phone_view
 
 TOKEN_HEADER = "X-Breeze-Token"
 MAX_MESSAGE_BYTES = 4096
@@ -35,8 +36,10 @@ class UserError(Exception):
 class Session:
     def __init__(self) -> None:
         self.clients: set[web.WebSocketResponse] = set()
+        self.phones: set[web.WebSocketResponse] = set()  # get phone_view only
         self._background: set[asyncio.Task[Any]] = set()
         self.ac = ACSession(on_change=lambda: self.spawn(self.broadcast(self.ac.message())))
+        self.phone = PhoneAccess(self.run_phone_socket, self.close_phones)
 
     def spawn(self, coro: Awaitable[Any]) -> None:
         task = asyncio.ensure_future(coro)
@@ -46,6 +49,28 @@ class Session:
     async def broadcast(self, message: dict[str, Any]) -> None:
         for ws in list(self.clients):
             await reply(ws, message)
+        if self.phones:
+            view = phone_view(message)
+            for ws in list(self.phones):
+                await reply(ws, view)
+
+    async def run_phone_socket(self, request: web.Request) -> web.WebSocketResponse:
+        ws = web.WebSocketResponse(heartbeat=20, max_msg_size=MAX_MESSAGE_BYTES)
+        await ws.prepare(request)
+        self.phones.add(ws)
+        await reply(ws, phone_view(self.ac.message()))
+        try:
+            async for msg in ws:
+                if msg.type == WSMsgType.TEXT:
+                    await handle_message(self, ws, msg.data, PHONE_HANDLERS)
+        finally:
+            self.phones.discard(ws)
+        return ws
+
+    async def close_phones(self) -> None:
+        for ws in list(self.phones):
+            await ws.close()
+        self.phones.clear()
 
 
 async def reply(ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
@@ -101,6 +126,36 @@ async def _ac_sleep_curve(session: Session, _ws: web.WebSocketResponse, message:
     session.ac.start_sleep_curve(message.get("minutes"))
 
 
+async def _ac_phone(session: Session, ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
+    await reply(ws, session.phone.info())
+
+
+async def _ac_phone_set(session: Session, ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
+    enabled = message.get("enabled")
+    if not isinstance(enabled, bool):
+        raise UserError(BAD_MESSAGE)
+    await session.phone.set_enabled(enabled)
+    await reply(ws, session.phone.info())
+
+
+async def _ac_phone_reset(session: Session, ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
+    await session.phone.reset_token()
+    await reply(ws, session.phone.info())
+
+
+async def _phone_get(session: Session, ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
+    await reply(ws, phone_view(session.ac.message()))
+    session.ac.refresh_soon()
+
+
+async def _phone_set(session: Session, ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
+    """Only the everyday controls, from a phone."""
+    changes = message.get("changes")
+    if not isinstance(changes, dict) or not changes or not set(changes) <= PHONE_CHANGES:
+        raise UserError(BAD_MESSAGE)
+    session.ac.change(changes)
+
+
 HANDLERS: dict[str, Handler] = {
     "ac_get": _ac_get,
     "ac_set": _ac_set,
@@ -111,19 +166,29 @@ HANDLERS: dict[str, Handler] = {
     "ac_filter_cleaned": _ac_filter_cleaned,
     "ac_schedules": _ac_schedules,
     "ac_sleep_curve": _ac_sleep_curve,
+    "ac_phone": _ac_phone,
+    "ac_phone_set": _ac_phone_set,
+    "ac_phone_reset": _ac_phone_reset,
+}
+# What a phone may ask. Nothing about Breeze's settings, schedules or the phone access itself.
+PHONE_HANDLERS: dict[str, Handler] = {
+    "ac_get": _phone_get,
+    "ac_set": _phone_set,
+    "ac_timer": _ac_timer,
 }
 # These wait on the AC; run them beside the read loop so other buttons keep working.
 BACKGROUND_HANDLERS = frozenset({"ac_display"})
 
 
-async def handle_message(session: Session, ws: web.WebSocketResponse, data: str) -> None:
+async def handle_message(session: Session, ws: web.WebSocketResponse, data: str,
+                         handlers: dict[str, Handler] = HANDLERS) -> None:
     try:
         message = json.loads(data)
     except json.JSONDecodeError:
         await reply(ws, {"type": "error", "message": BAD_MESSAGE})
         return
     kind = message.get("type") if isinstance(message, dict) else None
-    handler = HANDLERS.get(kind) if isinstance(kind, str) else None
+    handler = handlers.get(kind) if isinstance(kind, str) else None
     if handler is None:
         await reply(ws, {"type": "error", "message": BAD_MESSAGE})
         return
@@ -216,11 +281,13 @@ async def serve(port: int, token: str, parent_pid: int | None = None) -> None:
     await web.TCPSite(runner, "127.0.0.1", port).start()
     log.info("Breeze helper listening on 127.0.0.1:%s", port)
     session.ac.start()
+    await session.phone.start()  # only if the user turned it on
     watchdog = asyncio.create_task(exit_when_parent_dies(parent_pid, shutdown)) if parent_pid else None
     try:
         await shutdown.wait()
     finally:
         if watchdog:
             watchdog.cancel()
+        await session.phone.stop()
         await session.ac.close()
         await runner.cleanup()

@@ -8,6 +8,7 @@ struct EnergyLine: View {
     @State private var editingPrice = false
     @State private var priceText = ""
     @State private var editingSchedules = false
+    @State private var showingPhone = false
 
     private static let maxPrice = 100_000.0  // MAX_PRICE in store.py
     private static let barsSize = CGSize(width: 72, height: 24)
@@ -68,6 +69,7 @@ struct EnergyLine: View {
             Button(onCount == 0 ? "Schedules…" : "Schedules (\(onCount) on)…") {
                 editingSchedules = true
             }
+            Button("Phone Remote…") { showingPhone = true }
             Divider()
             Toggle("Dry the Coil After Cooling", isOn: Binding(get: { ac.dryCoil }, set: { client.setSetting("dry_coil", $0) }))
             Toggle("Switch Back On After a Power Cut", isOn: Binding(get: { ac.restoreAfterOutage },
@@ -99,7 +101,11 @@ struct EnergyLine: View {
         .popover(isPresented: $editingSchedules, arrowEdge: .bottom) {
             ScheduleEditor(client: client, ac: ac) { editingSchedules = false }
         }
-        .help("More: schedules, the unit's light, Breeze Away, drying the coil, power cuts, self clean, filter, electricity price")
+        .background {
+            // A second popover needs its own anchor.
+            Color.clear.popover(isPresented: $showingPhone, arrowEdge: .bottom) { PhoneView(client: client) }
+        }
+        .help("More: schedules, phone remote, the unit's light, Breeze Away, drying the coil, power cuts, self clean, filter, electricity price")
     }
 
     private var priceForm: some View {

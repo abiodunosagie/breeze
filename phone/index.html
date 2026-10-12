@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Breeze">
+  <meta name="theme-color" content="#0d1428">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/style.css">
+  <title>Breeze</title>
+</head>
+<body>
+  <main id="remote">
+    <header class="top">
+      <p class="status"><span class="dot" id="dot"></span><span id="status">Connecting</span></p>
+      <p class="room" id="room">&nbsp;</p>
+    </header>
+
+    <section class="setting">
+      <button class="step" id="cooler" aria-label="One degree cooler">&minus;</button>
+      <div class="target">
+        <span id="target">--</span><span class="unit">°C</span>
+        <p class="doing" id="doing">&nbsp;</p>
+      </div>
+      <button class="step" id="warmer" aria-label="One degree warmer">+</button>
+    </section>
+
+    <button class="power" id="power" aria-label="Power">
+      <svg viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></svg>
+      <span id="power-label">Power</span>
+    </button>
+
+    <section class="tiles">
+      <label class="tile">
+        <span class="name">Mode</span>
+        <select id="mode" aria-label="Mode"></select>
+      </label>
+      <label class="tile">
+        <span class="name">Fan</span>
+        <select id="fan" aria-label="Fan"></select>
+      </label>
+      <label class="tile">
+        <span class="name">Timer</span>
+        <select id="timer" aria-label="Timer"></select>
+      </label>
+      <button class="tile toggle" id="eco"><span class="name">Eco</span><span class="value">Off</span></button>
+      <button class="tile toggle" id="turbo"><span class="name">Turbo</span><span class="value">Off</span></button>
+      <button class="tile toggle" id="sleep"><span class="name">Sleep</span><span class="value">Off</span></button>
+    </section>
+
+    <p class="toast" id="toast" role="status" aria-live="polite"></p>
+  </main>
+
+  <main id="gate" hidden>
+    <h1>Breeze</h1>
+    <p>Scan the code in Breeze on your Mac: More, then Phone Remote.</p>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

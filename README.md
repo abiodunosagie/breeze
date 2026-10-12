@@ -24,6 +24,10 @@
 - Electricity now, today and this month, in naira once you set your price.
 - A health check: how far below the room the coil gets while cooling hard, learnt over the first week, with a warning if it falls well short.
 
+**Phone remote** (off until you turn it on: More, then Phone Remote)
+- Power, temperature, mode, fan, Eco, Turbo, Sleep and the timer, as a page for any phone on the same Wi-Fi. Scan the code on the Mac once, then add it to the Home Screen.
+- The phone gets those controls and nothing else: no settings, schedules, energy or anything about the link. Forget Paired Phones locks every phone out.
+
 **Keyboard** (anywhere, no Accessibility permission needed)
 - Control Option Command B: open the panel
 - Control Option Command Up and Down: one degree warmer or cooler

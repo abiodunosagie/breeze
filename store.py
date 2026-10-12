@@ -17,6 +17,7 @@ CARE_FILE = CONFIG_DIR / "care.json"
 SCHEDULE_FILE = CONFIG_DIR / "schedules.json"
 SLEEP_FILE = CONFIG_DIR / "sleep.json"
 HEALTH_FILE = CONFIG_DIR / "health.json"
+PHONE_FILE = CONFIG_DIR / "phone.json"
 MAX_PRICE = 100_000.0  # naira per kWh; anything above is a typo
 # The logs Breeze keeps (energy, care, health) are written at most this often, and on quit.
 SAVE_EVERY_SECONDS = 300.0
