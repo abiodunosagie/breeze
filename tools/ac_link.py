@@ -45,7 +45,8 @@ async def main() -> None:
             try:
                 token, key = await cloud.get_token(udpid, dev.id)
                 await dev.authenticate(token, key)
-            except (CloudError, AuthenticationError):
+            except (CloudError, AuthenticationError) as exc:
+                print(f"{region}, {endian} byte order: {exc}")
                 continue
             await dev.refresh()
             save_link({"ip": dev.ip, "port": dev.port, "id": dev.id, "token": dev.token, "key": dev.key})

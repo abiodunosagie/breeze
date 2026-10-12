@@ -38,6 +38,7 @@ struct ACPanelView: View {
             Button("Open Remote", action: openWindow)
             Spacer()
             Button("Quit Breeze") { NSApp.terminate(nil) }
+                .help("Quit Breeze")
         }
         .buttonStyle(.borderless)
         .font(.system(size: 12, weight: .medium))

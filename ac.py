@@ -245,6 +245,7 @@ class ACSession:
         if self._off_due:
             self._off_due = False
             if dev.power_state and not dev.self_clean_active:
+                # Power is always supported, so this skips change()'s checks safely.
                 self._pending["power"] = False
         if self._pending and (self._flusher is None or self._flusher.done()):
             self._flusher = asyncio.get_running_loop().create_task(self._flush())
@@ -283,7 +284,7 @@ class ACSession:
             if name in TOGGLES:
                 if not isinstance(value, bool):
                     raise ACError("Bad value.")
-                if not FEATURES.get(name, lambda _dev: True)(dev):
+                if name in FEATURES and not FEATURES[name](dev):
                     raise ACError("This air conditioner does not have that.")
             elif name == "target":
                 if not isinstance(value, (int, float)) or isinstance(value, bool) or not (

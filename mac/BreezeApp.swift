@@ -33,7 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         client.onLinkLost = { [weak self] in _ = await self?.helper.ensureRunning() }
         Task {
             if !(await helper.ensureRunning()) {
-                client.show("Breeze is still starting its helper. See ~/Library/Logs/Breeze.log if this stays.")
+                client.show("Breeze could not reach its helper yet. Retrying.")
             }
             // Connect either way: a failed link restarts the helper and retries with backoff.
             client.connect()
@@ -159,6 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(withTitle: "Show Panel", action: #selector(togglePanel), keyEquivalent: "").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Breeze", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        // The status button is flipped, so y past its height is just under the icon.
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
     }
 
