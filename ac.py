@@ -66,6 +66,8 @@ CURVE_MODES = ("cool", "auto")
 COMPRESSOR_HZ_GUESS = 60
 # The Timer button: turn the AC off after this many minutes.
 TIMER_MINUTES = (30, 60, 120, 180, 240, 480)
+# Events kept for the app; it notifies each new one once.
+EVENTS_KEPT = 10
 
 CLEANING = "The air conditioner is cleaning itself. Press power to stop the clean first."
 # Toggles some units lack, and how to tell.
@@ -144,8 +146,13 @@ class ACSession:
         # Power cuts. Loop time stops while the Mac sleeps, so a sleeping Mac never looks like one.
         self._unreachable_since: float | None = None
         self._last_running: dict[str, Any] | None = None  # settings the last time it was seen on
-        self.event: dict[str, Any] | None = None  # sent to the app once, for a notification
-        self.event_id = 0
+        # For notifications: the latest few, each with a rising id, so two in one reading both go out.
+        self.events: list[dict[str, Any]] = []
+        self._event_id = 0
+        # The unit's last fault code and filter light. None until the first reading, which only
+        # notes them: the panel shows what is already on, a restart of Breeze is no news.
+        self._fault_seen: int | None = None
+        self._filter_alert_seen = False
         if self._link:
             self.status = "connecting"
 
@@ -155,7 +162,7 @@ class ACSession:
         """For the Mac app. Lists what this unit supports, so the app shows only those controls."""
         dev = self._device
         base = {"type": "ac", "status": self.status, "notice": self.notice, "notice_id": self.notice_id,
-                "event": self.event, "event_id": self.event_id}
+                "events": list(self.events)}
         if dev is None or self.status in ("unlinked", "connecting"):
             return base
         state = {
@@ -362,6 +369,7 @@ class ACSession:
         if self._drying:
             self._check_drying(dev)
         self._remember_running()
+        self._watch_unit(dev)
         self._look_after(dev)
         self._run_schedules()
         self._follow_curve(dev)
@@ -394,8 +402,21 @@ class ACSession:
             self._send_event("power_back", text)
 
     def _send_event(self, kind: str, text: str) -> None:
-        self.event = {"kind": kind, "text": text}
-        self.event_id += 1
+        self._event_id += 1
+        self.events = [*self.events, {"id": self._event_id, "kind": kind, "text": text}][-EVENTS_KEPT:]
+
+    def _watch_unit(self, dev: Any) -> None:
+        """The unit's own alarms: a new fault code, or its filter light coming on. Each told once."""
+        fault, alert = dev.error_code or 0, bool(dev.filter_alert)
+        if self._fault_seen is None:
+            self._fault_seen, self._filter_alert_seen = fault, alert
+            return
+        if fault and fault != self._fault_seen:
+            self._send_event("fault", f"The air conditioner reports fault {fault}. Check the unit or its manual.")
+        self._fault_seen = fault
+        if alert and not self._filter_alert_seen:
+            self._send_event("filter", "The air conditioner's filter light is on. Time to wash the filter.")
+        self._filter_alert_seen = alert
 
     def restore(self) -> None:
         """On again, with the settings it had when last seen running."""

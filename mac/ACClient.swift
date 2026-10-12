@@ -66,9 +66,8 @@ struct ACState: Decodable, Equatable {
     var pricePerKWh: Double = 0
     var restoreAfterOutage = false
     /// Something to tell the user once, like the power coming back: kind and text.
-    var eventKind: String?
-    var eventText: String?
-    var eventId = 0
+    /// The latest few, oldest first; each new id gets one notification.
+    var events: [ACEvent] = []
     /// Minutes left while the coil dries before switching off, or nil.
     var dryingMinutesLeft: Int?
     /// The user's choices kept by the helper.
@@ -120,8 +119,7 @@ struct ACState: Decodable, Equatable {
         case hourlyKWh = "hourly_kwh"
         case dryingMinutesLeft = "drying_minutes_left"
         case settings
-        case event
-        case eventId = "event_id"
+        case events
         case min, max, modes, fans, swings
         case hasEco = "has_eco"
         case hasTurbo = "has_turbo"
@@ -184,10 +182,7 @@ struct ACState: Decodable, Equatable {
         restoreAfterOutage = settings.restore
         autoClean = settings.autoClean
         sleepCurveEnd = settings.sleepCurveEnd
-        let event = try? c.decode([String: String].self, forKey: .event)
-        eventKind = event?["kind"]
-        eventText = event?["text"]
-        eventId = value(.eventId, 0)
+        events = value(.events, [ACEvent]())
         powerW = try? c.decode(Int.self, forKey: .powerW)
         todayKWh = value(.todayKWh, 0.0)
         monthKWh = value(.monthKWh, 0.0)
@@ -247,6 +242,12 @@ struct ACSchedule: Codable, Equatable, Identifiable {
     var target: Double?
     var mode: String?
     var fan: String?
+}
+
+struct ACEvent: Decodable, Equatable {
+    var id: Int
+    var kind: String
+    var text: String
 }
 
 struct HealthInfo: Decodable, Equatable {
@@ -342,8 +343,9 @@ final class ACClient: ObservableObject {
             if let next = try? JSONDecoder().decode(ACState.self, from: data) {
                 if !next.notice.isEmpty, next.noticeId != ac?.noticeId { show(next.notice) }
                 // The first message after connecting carries the last event; only newer ones notify.
-                if let old = ac, next.eventId != old.eventId, let kind = next.eventKind, let text = next.eventText {
-                    onEvent?(kind, text)
+                if let old = ac {
+                    let seen = old.events.last?.id ?? 0
+                    for event in next.events where event.id > seen { onEvent?(event.kind, event.text) }
                 }
                 ac = next
             }

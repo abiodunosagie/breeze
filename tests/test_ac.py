@@ -89,7 +89,7 @@ def test_message_lists_only_what_the_unit_has():
 def test_unlinked_and_offline_send_status_only(monkeypatch, tmp_path):
     assert ac.load_link() is None
     assert ACSession(on_change=lambda: None).message() == {"type": "ac", "status": "unlinked", "notice": "", "notice_id": 0,
-                                                            "event": None, "event_id": 0}
+                                                            "events": []}
 
 
 def test_changes_are_checked():
@@ -412,7 +412,7 @@ def test_power_cut_asks_before_switching_back_on(monkeypatch):
     async def check():
         session = outage_session(monkeypatch)
         await go_through_outage(session, 12)
-        return session.message()["event"], session._device.power_state
+        return session.message()["events"][-1], session._device.power_state
     event, power = asyncio.run(check())
     assert event["kind"] == "power_back" and "12 min" in event["text"] and power is False
 
@@ -422,7 +422,7 @@ def test_power_cut_restores_when_chosen(monkeypatch):
         session = outage_session(monkeypatch, restore=True)
         session._device.target_temperature = 22.0
         await go_through_outage(session, 5)
-        return session.message()["event"]["kind"], session._device.power_state, session._device.target_temperature
+        return session.message()["events"][-1]["kind"], session._device.power_state, session._device.target_temperature
     assert asyncio.run(check()) == ("restored", True, 22.0)
 
 
@@ -432,8 +432,8 @@ def test_short_drop_or_still_on_is_not_a_power_cut(monkeypatch):
         await go_through_outage(short, 0.5)
         still_on = outage_session(monkeypatch)
         await go_through_outage(still_on, 30, comes_back_on=True)  # router restart: AC kept running
-        return short.message()["event"], still_on.message()["event"]
-    assert asyncio.run(check()) == (None, None)
+        return short.message()["events"], still_on.message()["events"]
+    assert asyncio.run(check()) == ([], [])
 
 
 def test_restore_needs_a_seen_running_state():
@@ -508,3 +508,29 @@ def test_drying_times_out(tmp_path, monkeypatch):
         await session._flusher
         return dev.power_state
     assert asyncio.run(check()) is False
+
+
+def test_two_events_in_one_reading_are_both_kept():
+    session = online_session()
+    session._watch_unit(session._device)  # the first reading only notes what is on
+    session._device.error_code, session._device.filter_alert = 7, True
+    session._watch_unit(session._device)
+    session._watch_unit(session._device)  # still the same: not told again
+    events = session.message()["events"]
+    assert [e["kind"] for e in events] == ["fault", "filter"] and events[0]["id"] < events[1]["id"]
+    assert "fault 7" in events[0]["text"]
+
+
+def test_only_the_latest_events_are_kept():
+    session = online_session()
+    for n in range(15):
+        session._send_event("power_back", f"n{n}")
+    events = session.message()["events"]
+    assert len(events) == ac.EVENTS_KEPT and events[-1]["text"] == "n14"
+
+
+def test_what_is_already_on_at_start_is_no_news():
+    session = online_session()
+    session._device.error_code, session._device.filter_alert = 7, True
+    session._watch_unit(session._device)
+    assert session.message()["events"] == []
