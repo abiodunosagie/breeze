@@ -250,7 +250,8 @@ private struct Ring: View {
 
     private func step(_ delta: Double) {
         guard let ac, let target = ac.target else { return }
-        let next = min(max(target + delta, ac.min), ac.max)
+        // Whole degrees, even when the hand remote left a half degree.
+        let next = min(max(target.rounded(.down) + delta, ac.min), ac.max)
         if next != target { client.setAC(["target": next]) }
     }
 

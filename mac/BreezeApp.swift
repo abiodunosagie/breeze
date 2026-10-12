@@ -32,11 +32,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         buildStatusItem()
         client.onLinkLost = { [weak self] in _ = await self?.helper.ensureRunning() }
         Task {
-            if await helper.ensureRunning() {
-                client.connect()
-            } else {
-                client.show("Breeze could not start its helper. See ~/Library/Logs/Breeze.log.")
+            if !(await helper.ensureRunning()) {
+                client.show("Breeze is still starting its helper. See ~/Library/Logs/Breeze.log if this stays.")
             }
+            // Connect either way: a failed link restarts the helper and retries with backoff.
+            client.connect()
         }
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(showWindow), name: Self.showWindowNotification, object: nil)

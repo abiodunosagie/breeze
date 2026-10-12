@@ -32,6 +32,9 @@ struct ACState: Decodable, Equatable {
     var timerChoices: [Int] = []
     /// Minutes until the off timer turns the AC off, or nil.
     var offIn: Int?
+    /// A message from the helper, shown once per id.
+    var notice = ""
+    var noticeId = 0
 
     enum CodingKeys: String, CodingKey {
         case status, power, mode, target, indoor, outdoor, fan, swing, eco, turbo, sleep, flash, display, cleaning
@@ -42,6 +45,8 @@ struct ACState: Decodable, Equatable {
         case hasFlash = "has_flash"
         case timerChoices = "timer_choices"
         case offIn = "off_in"
+        case notice
+        case noticeId = "notice_id"
     }
 
     /// Every field but the status is optional: an offline or unlinked AC sends only that.
@@ -73,6 +78,8 @@ struct ACState: Decodable, Equatable {
         hasFlash = value(.hasFlash, false)
         timerChoices = value(.timerChoices, [Int]())
         offIn = try? c.decode(Int.self, forKey: .offIn)
+        notice = value(.notice, "")
+        noticeId = value(.noticeId, 0)
     }
 
     var isOnline: Bool { status == .online }
@@ -139,7 +146,10 @@ final class ACClient: ObservableObject {
         guard let envelope = try? JSONDecoder().decode(Envelope.self, from: data) else { return }
         switch envelope.type {
         case "ac":
-            if let next = try? JSONDecoder().decode(ACState.self, from: data) { ac = next }
+            if let next = try? JSONDecoder().decode(ACState.self, from: data) {
+                if !next.notice.isEmpty, next.noticeId != ac?.noticeId { show(next.notice) }
+                ac = next
+            }
         case "error":
             if let text = envelope.message { show(text) }
         default:

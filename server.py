@@ -137,7 +137,8 @@ async def local_only(request: web.Request, handler):
     if origin is not None and origin not in request.app[ALLOWED_ORIGINS]:
         raise web.HTTPForbidden()
     token = request.app[TOKEN]
-    if not token or not hmac.compare_digest(request.headers.get(TOKEN_HEADER, ""), token):
+    # Bytes, so a non-ASCII header is a plain mismatch instead of a TypeError.
+    if not token or not hmac.compare_digest(request.headers.get(TOKEN_HEADER, "").encode(), token.encode()):
         raise web.HTTPForbidden()
     return await handler(request)
 

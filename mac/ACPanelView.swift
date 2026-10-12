@@ -23,8 +23,6 @@ enum ACNames {
     ]
     static let fans = ["auto": "Auto", "silent": "Silent", "low": "Low", "medium": "Medium", "high": "High", "max": "Max"]
     static let swings = ["off": "Fixed", "vertical": "Up/down", "horizontal": "Sideways", "both": "Both"]
-    /// How fast the air lines move for each fan speed.
-    static let speed = ["silent": 0.5, "low": 0.8, "medium": 1.1, "high": 1.5, "max": 1.9, "auto": 1.2]
 
     static func duration(_ minutes: Int) -> String {
         minutes < 60 ? "\(minutes) min" : minutes % 60 == 0 ? "\(minutes / 60) h" : "\(minutes / 60) h \(minutes % 60) min"
@@ -36,7 +34,7 @@ struct ACPanelView: View {
     @ObservedObject var client: ACClient
 
     static let width: CGFloat = 340
-    /// The Terminal step that links an air conditioner; the password is typed there, never in Couch.
+    /// The Terminal step that links an air conditioner; the password is typed there, never in Breeze.
     static let linkCommand = "cd \(Bundle.main.object(forInfoDictionaryKey: "BreezeProjectPath") as? String ?? "breeze") && uv run python tools/ac_link.py"
 
     var body: some View {
@@ -137,6 +135,8 @@ private struct ACControls: View {
                 extras
             }
             .opacity(ac.power ? 1 : 0.45)
+            // A drag cut short by the panel closing must not pin the slider.
+            .onDisappear { draft = nil }
             .animation(.easeInOut(duration: 0.3), value: ac.power)
         }
     }

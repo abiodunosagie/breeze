@@ -94,7 +94,7 @@ final class Helper {
         let url = dir.appendingPathComponent("Breeze.log")
         let size = (try? manager.attributesOfItem(atPath: url.path)[.size] as? UInt64) ?? 0
         if !manager.fileExists(atPath: url.path) || size > maxLogBytes {
-            manager.createFile(atPath: url.path, contents: nil)
+            manager.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600])
         }
         try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         let handle = try FileHandle(forWritingTo: url)

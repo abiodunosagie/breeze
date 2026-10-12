@@ -54,3 +54,7 @@ def test_unknown_requests_get_a_plain_error():
     asyncio.run(run())
     assert [m["message"] for m in sent][:2] == ["Bad message.", "Bad message."]
     assert sent[2]["message"] == "The air conditioner is not reachable right now."
+
+
+def test_non_ascii_token_is_refused_not_crashed():
+    assert check({"X-Breeze-Token": "sécret".encode().decode("latin-1")}) == 403

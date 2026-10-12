@@ -14,17 +14,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
+import tempfile
 from collections.abc import Callable
-from typing import Any
-
 from pathlib import Path
+from typing import Any
 
 from msmart.device import AirConditioner
 from msmart.discover import Discover
 
 CONFIG_DIR = Path.home() / ".config" / "breeze"
-
 AC_FILE = CONFIG_DIR / "ac.json"
 POLL_SECONDS = 20.0
 # After this many silent polls in a row, look for the AC again (the router may have moved it).
@@ -48,6 +48,20 @@ TOGGLES = ("power", "eco", "turbo", "sleep", "flash")
 # The Timer button: turn the AC off after this many minutes.
 TIMER_MINUTES = (30, 60, 120, 180, 240, 480)
 
+CLEANING = "The air conditioner is cleaning itself. Press power to stop the clean first."
+# Toggles some units lack, and how to tell.
+FEATURES: dict[str, Callable[[Any], bool]] = {
+    "eco": lambda dev: bool(dev.supports_ieco or dev.supports_eco),
+    "turbo": lambda dev: bool(dev.supports_turbo),
+    "flash": lambda dev: bool(dev.supports_flash),
+}
+# Settings picked from a list: the names, what this unit supports, and the message if not.
+CHOICES: dict[str, tuple[dict[str, Any], Callable[[Any], list], str]] = {
+    "mode": (MODES, lambda dev: dev.supported_operation_modes, "This air conditioner does not have that mode."),
+    "fan": (FANS, lambda dev: dev.supported_fan_speeds, "This air conditioner does not have that fan speed."),
+    "swing": (SWINGS, lambda dev: dev.supported_swing_modes, "This air conditioner does not have that airflow."),
+}
+
 
 class ACError(Exception):
     """A problem worded for the user."""
@@ -69,10 +83,18 @@ def load_link() -> dict[str, Any] | None:
     return data
 
 
-def _save_link(link: dict[str, Any]) -> None:
-    fd = os.open(AC_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as out:
-        json.dump(link, out)
+def save_link(link: dict[str, Any]) -> None:
+    """Write the keys readable only by this user, all at once: a crash never leaves half a file."""
+    CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(CONFIG_DIR, 0o700)  # also tighten a folder that already existed
+    fd, temp = tempfile.mkstemp(dir=CONFIG_DIR, prefix=".ac-", suffix=".json")  # created 0600
+    try:
+        with os.fdopen(fd, "w") as out:
+            json.dump(link, out)
+        os.replace(temp, AC_FILE)
+    except BaseException:
+        os.unlink(temp)
+        raise
 
 
 class ACSession:
@@ -85,13 +107,17 @@ class ACSession:
         self._link = load_link()
         self._device: Any = None
         self._lock = asyncio.Lock()  # one exchange with the AC at a time
-        self._pending: dict[str, Any] = {}
+        self._pending: dict[str, Any] = {}  # queued, not sent yet
+        self._inflight: dict[str, Any] = {}  # being sent right now
         self._flusher: asyncio.Task[None] | None = None
         self._poller: asyncio.Task[None] | None = None
         self._wake = asyncio.Event()
         self._silent_polls = 0
         self._off_timer: asyncio.TimerHandle | None = None
         self._off_at: float | None = None  # loop time the timer fires
+        self._off_due = False  # the timer fired; turn off on the next fresh reading
+        self.notice = ""  # a short message for the user, shown once per notice_id
+        self.notice_id = 0
         if self._link:
             self.status = "connecting"
 
@@ -100,8 +126,9 @@ class ACSession:
     def message(self) -> dict[str, Any]:
         """For the Mac app. Lists what this unit supports, so the app shows only those controls."""
         dev = self._device
+        base = {"type": "ac", "status": self.status, "notice": self.notice, "notice_id": self.notice_id}
         if dev is None or self.status in ("unlinked", "connecting"):
-            return {"type": "ac", "status": self.status}
+            return base
         state = {
             "power": bool(dev.power_state),
             "mode": _name(MODES, dev.operational_mode),
@@ -118,10 +145,11 @@ class ACSession:
             # Self clean runs with the unit off; any change but power would end it.
             "cleaning": bool(dev.self_clean_active),
         }
-        # A change waiting to go out shows already, so the app never snaps back meanwhile.
+        # Changes on their way show already, so the app never snaps back meanwhile.
+        state.update(self._inflight)
         state.update(self._pending)
         return {
-            "type": "ac", "status": self.status, **state,
+            **base, **state,
             "min": dev.min_target_temperature, "max": dev.max_target_temperature,
             "modes": [n for n, m in MODES.items() if m in dev.supported_operation_modes],
             "fans": [n for n, f in FANS.items() if f in dev.supported_fan_speeds],
@@ -135,9 +163,13 @@ class ACSession:
         }
 
     def _set_status(self, status: str) -> None:
-        if status != self.status:
-            self.status = status
+        """Every reading is sent on, changed or not: the room temperature moves on its own."""
+        self.status = status
         self._on_change()
+
+    def _tell(self, text: str) -> None:
+        self.notice = text
+        self.notice_id += 1
 
     # ------------------------------------------------------------ connection
 
@@ -148,12 +180,20 @@ class ACSession:
     async def close(self) -> None:
         if self._off_timer:
             self._off_timer.cancel()
-        for task in (self._poller, self._flusher):
-            if task:
-                task.cancel()
+        tasks = [task for task in (self._poller, self._flusher) if task]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     def refresh_soon(self) -> None:
-        """Read the AC now, for a panel that just opened."""
+        """Read the AC now, for a panel that just opened. Picks up a link made since Breeze started."""
+        if self._link is None:
+            self._link = load_link()
+            if self._link is None:
+                return
+            self.status = "connecting"
+            self._on_change()
+            self.start()
         self._wake.set()
 
     async def _connect(self) -> None:
@@ -167,24 +207,47 @@ class ACSession:
     async def _poll_loop(self) -> None:
         while True:
             try:
-                async with self._lock:
-                    if self._device is None:
-                        await self._connect()
-                    await self._device.refresh()
-                online = bool(self._device.online)
-            except Exception as exc:  # network and protocol errors of every kind end here
-                log.info("AC not reachable: %s", type(exc).__name__)
-                online = False
-            self._silent_polls = 0 if online else self._silent_polls + 1
-            self._set_status("online" if online else "offline")
-            if self._silent_polls >= REDISCOVER_AFTER:
-                self._silent_polls = 0
-                await self._rediscover()
+                await self._poll_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Never let one bad reading stop the polling for good.
+                log.exception("AC poll failed")
             self._wake.clear()
             try:
                 await asyncio.wait_for(self._wake.wait(), POLL_SECONDS)
             except TimeoutError:
                 pass
+
+    async def _poll_once(self) -> None:
+        try:
+            async with self._lock:
+                if self._device is None:
+                    await self._connect()
+                await self._device.refresh()
+            online = bool(self._device.online)
+        except Exception as exc:  # network and protocol errors of every kind end here
+            log.info("AC not reachable: %s", type(exc).__name__)
+            online = False
+        self._silent_polls = 0 if online else self._silent_polls + 1
+        if online:
+            self._after_fresh_reading()
+        self._set_status("online" if online else "offline")
+        if self._silent_polls >= REDISCOVER_AFTER:
+            self._silent_polls = 0
+            await self._rediscover()
+
+    def _after_fresh_reading(self) -> None:
+        """Things that wait for a reading we can trust: a due timer, changes held back by a failure."""
+        dev = self._device
+        if self._off_timer and not dev.power_state and not self._pending.get("power"):
+            self._cancel_timer()  # switched off by hand: an old timer must not catch it later
+        if self._off_due:
+            self._off_due = False
+            if dev.power_state and not dev.self_clean_active:
+                self._pending["power"] = False
+        if self._pending and (self._flusher is None or self._flusher.done()):
+            self._flusher = asyncio.get_running_loop().create_task(self._flush())
 
     async def _rediscover(self) -> None:
         """Find the AC by its id if its address changed, and keep the new address."""
@@ -197,8 +260,12 @@ class ACSession:
         if match and (match.ip, match.port) != (self._link["ip"], self._link["port"]):
             log.info("AC moved to a new address")
             self._link.update(ip=match.ip, port=match.port)
-            _save_link(self._link)
-            self._device = None
+            try:
+                save_link(self._link)
+            except OSError as exc:
+                log.info("could not save the new AC address: %s", type(exc).__name__)
+            async with self._lock:
+                self._device = None
 
     # ------------------------------------------------------------ changes
 
@@ -210,29 +277,23 @@ class ACSession:
         if not changes:
             raise ACError("Nothing to change.")
         if dev.self_clean_active and set(changes) != {"power"}:
-            raise ACError("The air conditioner is cleaning itself. Press power to stop the clean first.")
+            raise ACError(CLEANING)
         checked: dict[str, Any] = {}
         for name, value in changes.items():
             if name in TOGGLES:
                 if not isinstance(value, bool):
                     raise ACError("Bad value.")
-                if (name == "eco" and not (dev.supports_ieco or dev.supports_eco)) or (
-                        name == "turbo" and not dev.supports_turbo) or (name == "flash" and not dev.supports_flash):
+                if not FEATURES.get(name, lambda _dev: True)(dev):
                     raise ACError("This air conditioner does not have that.")
             elif name == "target":
                 if not isinstance(value, (int, float)) or isinstance(value, bool) or not (
                         dev.min_target_temperature <= value <= dev.max_target_temperature):
                     raise ACError(f"Choose {dev.min_target_temperature:g} to {dev.max_target_temperature:g} °C.")
-                value = float(round(value))
-            elif name == "mode":
-                if MODES.get(value) not in dev.supported_operation_modes:
-                    raise ACError("This air conditioner does not have that mode.")
-            elif name == "fan":
-                if FANS.get(value) not in dev.supported_fan_speeds:
-                    raise ACError("This air conditioner does not have that fan speed.")
-            elif name == "swing":
-                if SWINGS.get(value) not in dev.supported_swing_modes:
-                    raise ACError("This air conditioner does not have that airflow.")
+                value = float(math.floor(value + 0.5))  # whole degrees, halves round up
+            elif name in CHOICES:
+                table, supported, problem = CHOICES[name]
+                if not isinstance(value, str) or table.get(value) not in supported(dev):
+                    raise ACError(problem)
             else:
                 raise ACError("Unknown setting.")
             checked[name] = value
@@ -244,16 +305,32 @@ class ACSession:
     async def _flush(self) -> None:
         """Send queued changes. Values changed again meanwhile go out in the next round."""
         while self._pending:
-            changes, self._pending = self._pending, {}
+            self._inflight, self._pending = self._pending, {}
+            changes = self._inflight
             try:
                 async with self._lock:
-                    self._apply_to(self._device, changes)
-                    await self._device.apply()
-                    online = bool(self._device.online)
+                    dev = self._device
+                    if dev is None:
+                        raise ConnectionError("no device")
+                    if dev.self_clean_active and set(changes) != {"power"}:
+                        # Started from the hand remote or the Midea app since the change was queued.
+                        changes = {k: v for k, v in changes.items() if k == "power"}
+                        self._tell(CLEANING)
+                    if changes:
+                        self._apply_to(dev, changes)
+                        await dev.apply()
+                    online = bool(dev.online)
             except Exception as exc:
                 log.info("AC change failed: %s", type(exc).__name__)
                 online = False
-            self._set_status("online" if online else "offline")
+            self._inflight = {}
+            if not online:
+                # Keep the change for the next good reading; newer values win.
+                self._pending = {**changes, **self._pending}
+                self._tell("Couldn't reach the air conditioner. Breeze will try again.")
+                self._set_status("offline")
+                return
+            self._set_status("online")
 
     @staticmethod
     def _apply_to(dev: Any, changes: dict[str, Any]) -> None:
@@ -291,34 +368,40 @@ class ACSession:
         """Turn the AC off after `minutes`, or cancel with None. Runs while Breeze runs."""
         if minutes is not None and minutes not in TIMER_MINUTES:
             raise ACError("Choose one of the timer lengths.")
-        if self._off_timer:
-            self._off_timer.cancel()
-        self._off_timer = self._off_at = None
+        if minutes is not None and not (self._device and self._device.power_state):
+            raise ACError("Turn the air conditioner on first.")
+        self._cancel_timer()
         if minutes is not None:
             loop = asyncio.get_running_loop()
             self._off_at = loop.time() + minutes * 60
             self._off_timer = loop.call_later(minutes * 60, self._timer_fired)
         self._on_change()
 
-    def _timer_fired(self) -> None:
+    def _cancel_timer(self) -> None:
+        if self._off_timer:
+            self._off_timer.cancel()
         self._off_timer = self._off_at = None
-        dev = self._device
-        if dev is not None and (dev.self_clean_active or not dev.power_state):
-            self._on_change()  # already off (or cleaning, which an off command would end)
-            return
-        try:
-            self.change({"power": False})
-        except ACError:
-            log.info("off timer fired while the AC was not reachable")
-            self._on_change()
+
+    def _timer_fired(self) -> None:
+        """Turn off on a fresh reading, so a clean started meanwhile is never cut short. If the AC
+        cannot be reached, the next reading that can does it."""
+        self._off_timer = self._off_at = None
+        self._off_due = True
+        self._on_change()
+        self.refresh_soon()
 
     async def toggle_display(self) -> None:
         """The light on the indoor unit. Midea only offers a toggle for it."""
         dev = self._device
         if dev is None or self.status != "online" or not dev.supports_display_control:
             raise ACError("The air conditioner is not reachable right now.")
-        if dev.self_clean_active:
-            raise ACError("The air conditioner is cleaning itself. Press power to stop the clean first.")
         async with self._lock:
-            await dev.toggle_display()
+            if dev.self_clean_active:
+                raise ACError(CLEANING)
+            try:
+                await dev.toggle_display()
+            except Exception as exc:
+                log.info("AC light toggle failed: %s", type(exc).__name__)
+                self._set_status("offline")
+                raise ACError("Couldn't reach the air conditioner.") from None
         self._on_change()
