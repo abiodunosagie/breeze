@@ -30,6 +30,10 @@ struct ACState: Decodable, Equatable {
     /// The unit's own error code, when it reports one.
     var fault: Int?
     var filterDue = false
+    /// Minutes left while the coil dries before switching off, or nil.
+    var dryingMinutesLeft: Int?
+    /// The user's choices kept by the helper.
+    var dryCoil = false
     var min: Double = 16
     var max: Double = 30
     var modes: [String] = []
@@ -52,6 +56,8 @@ struct ACState: Decodable, Equatable {
         case effort, phase, coil, fault
         case compressorHz = "compressor_hz"
         case filterDue = "filter_due"
+        case dryingMinutesLeft = "drying_minutes_left"
+        case settings
         case min, max, modes, fans, swings
         case hasEco = "has_eco"
         case hasTurbo = "has_turbo"
@@ -88,6 +94,9 @@ struct ACState: Decodable, Equatable {
         coil = try? c.decode(Double.self, forKey: .coil)
         fault = try? c.decode(Int.self, forKey: .fault)
         filterDue = value(.filterDue, false)
+        dryingMinutesLeft = try? c.decode(Int.self, forKey: .dryingMinutesLeft)
+        let settings = value(.settings, [String: Bool]())
+        dryCoil = settings["dry_coil"] ?? false
         min = value(.min, 16.0)
         max = value(.max, 30.0)
         modes = value(.modes, [String]())
@@ -202,6 +211,8 @@ final class ACClient: ObservableObject {
     /// Change one or more settings, like ["target": 22] or ["power": false]. The helper checks each.
     func setAC(_ changes: [String: Any]) { send(["type": "ac_set", "changes": changes]) }
     func toggleACDisplay() { send(["type": "ac_display"]) }
+    /// One of the user's choices the helper keeps, like "dry_coil".
+    func setSetting(_ name: String, _ value: Bool) { send(["type": "ac_setting", "name": name, "value": value]) }
     /// Turn the AC off after `minutes`, or cancel the timer with nil.
     func setOffTimer(_ minutes: Int?) { send(["type": "ac_timer", "minutes": minutes as Any? ?? NSNull()]) }
 

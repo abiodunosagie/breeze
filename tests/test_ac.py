@@ -48,6 +48,7 @@ class FakeAC:
 
 def online_session(device=None):
     session = ACSession(on_change=lambda: None)
+    session.settings = dict(ac.DEFAULT_SETTINGS)  # never the owner's real choices
     session._device = device or FakeAC()
     session.status = "online"
     return session
@@ -279,3 +280,72 @@ def test_fault_and_filter_are_reported():
         m = session.message()
         return m["fault"], m["filter_due"]
     assert asyncio.run(check()) == (5, True)
+
+
+def drying_session(tmp_path, monkeypatch):
+    monkeypatch.setattr(ac, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ac, "SETTINGS_FILE", tmp_path / "settings.json")
+    session = online_session()
+
+    async def refresh():
+        pass
+
+    session._device.refresh = refresh
+    session.set_setting("dry_coil", True)
+    return session
+
+
+def test_switching_off_after_cooling_dries_the_coil_first(tmp_path, monkeypatch):
+    async def check():
+        session = drying_session(tmp_path, monkeypatch)
+        dev = session._device
+        session.change({"power": False})
+        await session._flusher
+        assert dev.power_state is True and dev.operational_mode == MODES["fan"] and dev.fan_speed == FANS["low"]
+        assert session.message()["drying_minutes_left"] == ac.DRY_MAX_MINUTES
+        dev.indoor_coil_temperature = 24.5  # room 25: dry
+        await session._poll_once()
+        await session._flusher
+        return dev, session.message()
+    dev, message = asyncio.run(check())
+    assert dev.power_state is False and dev.operational_mode == MODES["cool"]  # mode back for next time
+    assert message["drying_minutes_left"] is None
+    assert ac.load_settings()["dry_coil"] is True  # remembered
+
+
+def test_power_while_drying_stops_at_once(tmp_path, monkeypatch):
+    async def check():
+        session = drying_session(tmp_path, monkeypatch)
+        session.change({"power": False})
+        await session._flusher
+        session.change({"power": False})  # "Stop now"
+        await session._flusher
+        return session._device.power_state, session._drying
+    assert asyncio.run(check()) == (False, None)
+
+
+def test_off_from_the_hand_remote_is_left_alone(tmp_path, monkeypatch):
+    async def check():
+        session = drying_session(tmp_path, monkeypatch)
+        session.change({"power": False})
+        await session._flusher
+        session._device.power_state = False  # switched off by hand meanwhile
+        await session._poll_once()
+        return session._drying, session._device.power_state, session._pending
+    assert asyncio.run(check()) == (None, False, {})
+
+
+def test_no_drying_when_off_or_not_asked(tmp_path, monkeypatch):
+    async def check():
+        session = online_session()  # drying not turned on
+        session.change({"power": False})
+        await session._flusher
+        return session._device.power_state, session._drying
+    assert asyncio.run(check()) == (False, None)
+
+
+def test_bad_settings_are_refused(tmp_path, monkeypatch):
+    session = drying_session(tmp_path, monkeypatch)
+    for name, value in (("dry_coil", "yes"), ("rm", True)):
+        with pytest.raises(ACError):
+            session.set_setting(name, value)

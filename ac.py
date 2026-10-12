@@ -26,9 +26,23 @@ from msmart.discover import Discover
 
 CONFIG_DIR = Path.home() / ".config" / "breeze"
 AC_FILE = CONFIG_DIR / "ac.json"
+SETTINGS_FILE = CONFIG_DIR / "settings.json"
+# The user's choices, all off until turned on.
+DEFAULT_SETTINGS: dict[str, Any] = {
+    # On switching off after cooling, run the fan alone until the coil is dry: no damp coil for mould.
+    "dry_coil": False,
+}
+# Drying ends when the coil is this close to the room temperature, or after DRY_MAX_MINUTES.
+DRY_DONE_WITHIN = 1.0
+DRY_MAX_MINUTES = 20
+# Modes that leave the coil cold and wet.
+WET_MODES = ("cool", "dry", "auto")
 POLL_SECONDS = 20.0
 # After this many silent polls in a row, look for the AC again (the router may have moved it).
 REDISCOVER_AFTER = 3
+# Right after a failed connection (a restart often finds the old one still open), retry soon.
+QUICK_RETRY_SECONDS = 3.0
+QUICK_RETRIES = 3
 DISCOVER_SECONDS = 4
 
 log = logging.getLogger("breeze.ac")
@@ -87,18 +101,34 @@ def load_link() -> dict[str, Any] | None:
     return data
 
 
-def save_link(link: dict[str, Any]) -> None:
-    """Write the keys readable only by this user, all at once: a crash never leaves half a file."""
+def write_private(path: Path, data: Any) -> None:
+    """Write JSON readable only by this user, all at once: a crash never leaves half a file."""
     CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(CONFIG_DIR, 0o700)  # also tighten a folder that already existed
-    fd, temp = tempfile.mkstemp(dir=CONFIG_DIR, prefix=".ac-", suffix=".json")  # created 0600
+    fd, temp = tempfile.mkstemp(dir=CONFIG_DIR, prefix=".tmp-", suffix=".json")  # created 0600
     try:
         with os.fdopen(fd, "w") as out:
-            json.dump(link, out)
-        os.replace(temp, AC_FILE)
+            json.dump(data, out)
+        os.replace(temp, path)
     except BaseException:
         os.unlink(temp)
         raise
+
+
+def save_link(link: dict[str, Any]) -> None:
+    write_private(AC_FILE, link)
+
+
+def load_settings() -> dict[str, Any]:
+    """The user's choices, each falling back to its default when missing or of the wrong type."""
+    try:
+        data = json.loads(SETTINGS_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    return {name: data[name] if isinstance(data.get(name), type(default)) else default
+            for name, default in DEFAULT_SETTINGS.items()}
 
 
 class ACSession:
@@ -124,6 +154,9 @@ class ACSession:
         self.notice_id = 0
         self._top_hz = COMPRESSOR_HZ_GUESS  # fastest compressor speed seen, to judge how hard it works
         self._cleaning_since: float | None = None  # loop time the current self clean was first seen
+        self.settings = load_settings()
+        # While drying the coil: when it started and the mode to go back to, for next time.
+        self._drying: dict[str, Any] | None = None
         if self._link:
             self.status = "connecting"
 
@@ -158,12 +191,13 @@ class ACSession:
             "coil": dev.indoor_coil_temperature,
             "fault": dev.error_code or None,
             "filter_due": bool(dev.filter_alert),
+            "drying_minutes_left": self._drying_minutes_left(),
         }
         # Changes on their way show already, so the app never snaps back meanwhile.
         state.update(self._inflight)
         state.update(self._pending)
         return {
-            **base, **state,
+            **base, **state, "settings": dict(self.settings),
             "min": dev.min_target_temperature, "max": dev.max_target_temperature,
             "modes": [n for n, m in MODES.items() if m in dev.supported_operation_modes],
             "fans": [n for n, f in FANS.items() if f in dev.supported_fan_speeds],
@@ -258,8 +292,9 @@ class ACSession:
                 # Never let one bad reading stop the polling for good.
                 log.exception("AC poll failed")
             self._wake.clear()
+            quick = self.status == "offline" and 0 < self._silent_polls <= QUICK_RETRIES
             try:
-                await asyncio.wait_for(self._wake.wait(), POLL_SECONDS)
+                await asyncio.wait_for(self._wake.wait(), QUICK_RETRY_SECONDS if quick else POLL_SECONDS)
             except TimeoutError:
                 pass
 
@@ -296,8 +331,9 @@ class ACSession:
         if self._off_due:
             self._off_due = False
             if dev.power_state and not dev.self_clean_active:
-                # Power is always supported, so this skips change()'s checks safely.
-                self._pending["power"] = False
+                self._turn_off()
+        if self._drying:
+            self._check_drying(dev)
         if self._pending and (self._flusher is None or self._flusher.done()):
             self._flusher = asyncio.get_running_loop().create_task(self._flush())
 
@@ -321,6 +357,54 @@ class ACSession:
 
     # ------------------------------------------------------------ changes
 
+    # ------------------------------------------------------------ drying the coil
+
+    def _turn_off(self) -> None:
+        """Switch off, the way Breeze does it: dry the coil first if the user asked for that.
+        Only Breeze's own power offs come here (button, timer); an off from the hand remote never does."""
+        dev = self._device
+        mode = _name(MODES, dev.operational_mode)
+        if self.settings["dry_coil"] and dev.power_state and mode in WET_MODES and not dev.self_clean_active:
+            self._drying = {"since": asyncio.get_running_loop().time(), "mode": mode}
+            self._pending.update(mode="fan", fan="low")
+            self._tell("Drying the coil before switching off.")
+        else:
+            self._pending["power"] = False
+
+    def _check_drying(self, dev: Any) -> None:
+        """Finish once the coil is dry or time is up. If the AC was switched off another way, stop."""
+        assert self._drying is not None
+        if not dev.power_state:
+            self._drying = None
+            return
+        elapsed = (asyncio.get_running_loop().time() - self._drying["since"]) / 60
+        coil, room = dev.indoor_coil_temperature, dev.indoor_temperature
+        dry = coil is not None and room is not None and coil >= room - DRY_DONE_WITHIN
+        if dry or elapsed >= DRY_MAX_MINUTES:
+            self._finish_drying()
+
+    def _finish_drying(self) -> None:
+        """Off, with the mode put back so the next switch on cools again."""
+        assert self._drying is not None
+        self._pending.update(power=False, mode=self._drying["mode"])
+        self._drying = None
+        self._tell("The coil is dry. The air conditioner is off.")
+
+    def _drying_minutes_left(self) -> int | None:
+        if self._drying is None:
+            return None
+        elapsed = (asyncio.get_running_loop().time() - self._drying["since"]) / 60
+        return max(1, round(DRY_MAX_MINUTES - elapsed))
+
+    def set_setting(self, name: object, value: object) -> None:
+        if name not in DEFAULT_SETTINGS or not isinstance(value, type(DEFAULT_SETTINGS[name])):
+            raise ACError("Unknown setting.")
+        self.settings[name] = value
+        write_private(SETTINGS_FILE, self.settings)
+        self._on_change()
+
+    # ------------------------------------------------------------ changes
+
     def change(self, changes: dict[str, Any]) -> None:
         """Check every value against what this unit supports, then queue it."""
         dev = self._device
@@ -328,6 +412,13 @@ class ACSession:
             raise ACError("The air conditioner is not reachable right now.")
         if not changes:
             raise ACError("Nothing to change.")
+        if self._drying is not None:
+            # Any press while drying takes over: power means off now, anything else ends the drying.
+            if changes.get("power") is False:
+                self._finish_drying()
+                self._kick()
+                return
+            self._drying = None
         if dev.self_clean_active and set(changes) != {"power"}:
             raise ACError(CLEANING)
         checked: dict[str, Any] = {}
@@ -349,9 +440,17 @@ class ACSession:
             else:
                 raise ACError("Unknown setting.")
             checked[name] = value
+        if checked.pop("power", None) is False:
+            self._turn_off()
+        elif "power" in changes:
+            checked["power"] = True
         self._pending.update(checked)
+        self._kick()
+
+    def _kick(self) -> None:
+        """Tell the app, and send whatever is queued."""
         self._on_change()
-        if self._flusher is None or self._flusher.done():
+        if self._pending and (self._flusher is None or self._flusher.done()):
             self._flusher = asyncio.get_running_loop().create_task(self._flush())
 
     async def _flush(self) -> None:

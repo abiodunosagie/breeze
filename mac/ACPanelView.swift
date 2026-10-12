@@ -139,6 +139,7 @@ private struct ACControls: View {
     /// What the AC is really doing, under the big number.
     private var statusLine: String {
         if ac.cleaning { return "Self-cleaning" + (ac.cleaningMinutes.map { ", \($0) min so far" } ?? "") }
+        if ac.dryingMinutesLeft != nil { return "Drying the coil, then off" }
         switch ac.phase {
         case "working": return ac.turbo ? "Turbo, cooling fast" : ac.mode == "dry" ? "Drying the air" : "Cooling the room"
         case "holding": return "Room at temperature, resting"
@@ -152,6 +153,10 @@ private struct ACControls: View {
         if let fault = ac.fault {
             return Banner(key: "fault", text: "The AC reports fault \(fault). Check the unit.", symbol: "exclamationmark.triangle.fill",
                           color: Color(red: 1, green: 0.45, blue: 0.4))
+        }
+        if let minutes = ac.dryingMinutesLeft {
+            return Banner(key: "drying", text: "Drying the coil, up to \(minutes) min. Power stops it now.", symbol: "wind",
+                          color: ACTheme.accent)
         }
         if ac.cleaning {
             return Banner(key: "clean", text: "Self-cleaning. Press power to stop it.", symbol: "sparkles", color: ACTheme.eco)
@@ -268,7 +273,17 @@ private struct ACControls: View {
                 }
                 Spacer(minLength: 0)
             }
-            timer
+            HStack {
+                timer
+                Spacer()
+                Toggle(isOn: Binding(get: { ac.dryCoil }, set: { client.setSetting("dry_coil", $0) })) {
+                    Text("Dry coil on off").font(.system(size: 12, weight: .semibold))
+                }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .tint(ACTheme.accent)
+                .help("When you switch off after cooling, the fan runs alone until the coil is dry (up to 20 min), so mould and smells have no damp to grow in")
+            }
         }
     }
 
