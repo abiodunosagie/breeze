@@ -54,7 +54,7 @@ struct ACUnit: View {
             .frame(maxWidth: .infinity)
             .frame(maxHeight: .infinity, alignment: .top)
             .background(alignment: .top) {
-                Airflow(style: style)
+                Airflow(style: style, running: flowing)
                     .id(style)  // a new mode fades in over the old one, colours and all
                     .transition(.opacity)
                     .frame(width: Self.airSize.width, height: Self.airSize.height)
@@ -104,16 +104,20 @@ struct ACUnit: View {
 /// along them, and fine particles drifting down. Drawn every frame from the clock alone.
 struct Airflow: View {
     let style: AirStyle
+    /// False while the AC is off: the hidden air stops drawing, so it costs nothing.
+    let running: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        TimelineView(.animation) { context in
+        // With Reduce Motion on, one still frame of the air instead of a moving one.
+        TimelineView(.animation(minimumInterval: nil, paused: !running || reduceMotion)) { context in
             AirflowCanvas(style: style, time: context.date.timeIntervalSinceReferenceDate)
         }
-        .allowsHitTesting(false)
     }
 }
 
-/// One frame of the air. Separate from the clock so a still frame can be drawn for any moment.
+/// One frame of the air, from the time alone, so a still frame can be drawn for any moment
+/// (Reduce Motion, and checking the look of each mode).
 struct AirflowCanvas: View {
     let style: AirStyle
     let time: Double
@@ -141,30 +145,33 @@ struct AirflowCanvas: View {
                     startPoint: CGPoint(x: mid, y: 0), endPoint: CGPoint(x: mid, y: size.height * 0.85)))
             }
 
+            // Each shading and each path is made once per frame and reused below.
+            let faint = fade(size, strength: 0.22 * breath), soft = fade(size, strength: 0.35 * breath)
+            let medium = fade(size, strength: 0.45 * breath), bright = fade(size, strength: breath)
+
             // Far streams: fainter, thinner and slower, for depth.
-            let far = (0..<style.lines).map { stream($0, in: size, depth: 0.55, offset: 0.5) }
-            for (index, points) in far.enumerated() {
-                let path = smooth(points)
-                canvas.stroke(path, with: fade(size, strength: 0.22 * breath), style: StrokeStyle(lineWidth: 0.8, lineCap: .round))
-                let phase = -CGFloat((time * style.speed * 55 + Double(index) * 37).truncatingRemainder(dividingBy: 140))
-                canvas.stroke(path, with: fade(size, strength: 0.45 * breath),
-                              style: StrokeStyle(lineWidth: 1.2, lineCap: .round, dash: [18, 122], dashPhase: phase))
+            let farDash: [CGFloat] = [18, 122]
+            for index in 0..<style.lines {
+                let path = smooth(stream(index, in: size, depth: 0.55, offset: 0.5))
+                canvas.stroke(path, with: faint, style: StrokeStyle(lineWidth: 0.8, lineCap: .round))
+                let phase = -CGFloat((time * style.speed * 55 + Double(index) * 37).truncatingRemainder(dividingBy: Double(farDash.reduce(0, +))))
+                canvas.stroke(path, with: medium, style: StrokeStyle(lineWidth: 1.2, lineCap: .round, dash: farDash, dashPhase: phase))
             }
 
             // Near streams, soft and wide under a blur, then fine with pulses of air.
             let near = (0..<style.lines).map { stream($0, in: size, depth: 1, offset: 0) }
+            let nearPaths = near.map(smooth)
             canvas.drawLayer { layer in
                 layer.addFilter(.blur(radius: 6))
-                for points in near {
-                    layer.stroke(smooth(points), with: fade(size, strength: 0.45 * breath), style: StrokeStyle(lineWidth: 8, lineCap: .round))
+                for path in nearPaths {
+                    layer.stroke(path, with: medium, style: StrokeStyle(lineWidth: 8, lineCap: .round))
                 }
             }
-            for (index, points) in near.enumerated() {
-                let path = smooth(points)
-                canvas.stroke(path, with: fade(size, strength: 0.35 * breath), style: StrokeStyle(lineWidth: 1, lineCap: .round))
-                let phase = -CGFloat((time * style.speed * 90 + Double(index) * 23).truncatingRemainder(dividingBy: 120))
-                canvas.stroke(path, with: fade(size, strength: breath),
-                              style: StrokeStyle(lineWidth: 2.2, lineCap: .round, dash: [28, 92], dashPhase: phase))
+            let nearDash: [CGFloat] = [28, 92]
+            for (index, path) in nearPaths.enumerated() {
+                canvas.stroke(path, with: soft, style: StrokeStyle(lineWidth: 1, lineCap: .round))
+                let phase = -CGFloat((time * style.speed * 90 + Double(index) * 23).truncatingRemainder(dividingBy: Double(nearDash.reduce(0, +))))
+                canvas.stroke(path, with: bright, style: StrokeStyle(lineWidth: 2.2, lineCap: .round, dash: nearDash, dashPhase: phase))
             }
 
             // Particles riding the air: a soft glow under each, a bright core on top.
@@ -227,7 +234,7 @@ struct AirflowCanvas: View {
     }
 
     /// Bright at the vent, gone by the bottom.
-    private func fade(_ size: CGSize, strength: Double = 0.5) -> GraphicsContext.Shading {
+    private func fade(_ size: CGSize, strength: Double) -> GraphicsContext.Shading {
         .linearGradient(Gradient(stops: [
             .init(color: style.near.opacity(0.9 * strength), location: 0),
             .init(color: style.far.opacity(0.6 * strength), location: 0.5),
