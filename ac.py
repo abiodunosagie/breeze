@@ -21,8 +21,9 @@ from typing import Any
 from msmart.device import AirConditioner
 from msmart.discover import Discover
 
+from care import Care
 from energy import EnergyLog
-from store import (AC_FILE, CONFIG_DIR, DEFAULT_SETTINGS, DRY_DONE_WITHIN, DRY_MAX_MINUTES, ENERGY_FILE,  # noqa: F401
+from store import (AC_FILE, CARE_FILE, CONFIG_DIR, DEFAULT_SETTINGS, DRY_DONE_WITHIN, DRY_MAX_MINUTES, ENERGY_FILE,  # noqa: F401
                    OUTAGE_SECONDS, SETTINGS_FILE, WET_MODES, check_setting, load_settings, save_link, write_private)
 
 POLL_SECONDS = 20.0
@@ -123,6 +124,8 @@ class ACSession:
         self._cleaning_since: float | None = None  # loop time the current self clean was first seen
         self.settings = load_settings()
         self.energy = EnergyLog(ENERGY_FILE, write_private)
+        self.care = Care(CARE_FILE, write_private)
+        self._cleaner: asyncio.Task[None] | None = None
         # While drying the coil: when it started and the mode to go back to, for next time.
         self._drying: dict[str, Any] | None = None
         # Power cuts. Loop time stops while the Mac sleeps, so a sleeping Mac never looks like one.
@@ -174,6 +177,7 @@ class ACSession:
             "filter_due": bool(dev.filter_alert),
             "drying_minutes_left": self._drying_minutes_left(),
             **self.energy.summary(),
+            **self.care.summary(),
         }
         # Changes on their way show already, so the app never snaps back meanwhile.
         for waiting in (self._inflight, self._pending):
@@ -198,6 +202,7 @@ class ACSession:
             "has_louver_v": bool(dev.supports_vertical_swing_angle),
             "has_louver_h": bool(dev.supports_horizontal_swing_angle),
             "has_fan_percent": bool(dev.supports_custom_fan_speed),
+            "has_self_clean": bool(dev.supports_self_clean),
             "timer_choices": list(TIMER_MINUTES),
             "off_in": self._minutes_left(),
         }
@@ -245,9 +250,10 @@ class ACSession:
 
     async def close(self) -> None:
         self.energy.save()
+        self.care.save()
         if self._off_timer:
             self._off_timer.cancel()
-        tasks = [task for task in (self._poller, self._flusher) if task]
+        tasks = [task for task in (self._poller, self._flusher, self._cleaner) if task]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -337,6 +343,7 @@ class ACSession:
         if self._drying:
             self._check_drying(dev)
         self._remember_running()
+        self._look_after(dev)
         if self._pending and (self._flusher is None or self._flusher.done()):
             self._flusher = asyncio.get_running_loop().create_task(self._flush())
 
@@ -392,7 +399,46 @@ class ACSession:
             async with self._lock:
                 self._device = None
 
-    # ------------------------------------------------------------ changes
+    # ------------------------------------------------------------ self clean and filter
+
+    def _look_after(self, dev: Any) -> None:
+        """Count wet hours, tell the user about a finished clean or a filter due, start a clean when due."""
+        wet = _name(MODES, dev.operational_mode) in WET_MODES
+        news = self.care.record(bool(dev.power_state), wet, bool(dev.self_clean_active))
+        if news == "clean_done":
+            self._send_event("clean_done", "The self clean finished. The coil is clean and dry.")
+        elif news == "filter_due":
+            hours = round(self.care.filter_hours)
+            self._send_event("filter", f"Time to wash the filter: about {hours} hours of cooling since the last wash.")
+        if self._clean_allowed(dev) and self.care.clean_due(self.settings["auto_clean"]):
+            self.care.asked_for_clean()
+            self._cleaner = asyncio.get_running_loop().create_task(self._start_clean())
+
+    def _clean_allowed(self, dev: Any) -> bool:
+        """Only with the AC off and idle: nothing queued or being sent, no drying, no timer waiting."""
+        return dev.supports_self_clean and self._off_and_idle(dev) and (self._cleaner is None or self._cleaner.done())
+
+    async def _start_clean(self) -> None:
+        try:
+            async with self._lock:
+                dev = self._device
+                # Checked again under the lock: a change may have been queued meanwhile.
+                if dev is None or not self._off_and_idle(dev):
+                    return
+                await dev.start_self_clean()
+        except Exception as exc:
+            log.info("AC self clean start failed: %s", type(exc).__name__)
+            return
+        log.info("asked the AC for a self clean")
+        self._wake.set()
+
+    def _off_and_idle(self, dev: Any) -> bool:
+        return (not dev.power_state and not dev.self_clean_active and not self._pending and not self._inflight
+                and self._drying is None and not self._off_due)
+
+    def filter_cleaned(self) -> None:
+        self.care.filter_cleaned()
+        self._on_change()
 
     # ------------------------------------------------------------ drying the coil
 

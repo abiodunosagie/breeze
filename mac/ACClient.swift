@@ -42,6 +42,14 @@ struct ACState: Decodable, Equatable {
     var hasLouverV = false
     var hasLouverH = false
     var hasFanPercent = false
+    var hasSelfClean = false
+    /// Wet running hours since the last self clean and the last filter wash, and when each is due.
+    var cleanHours: Double = 0
+    var filterHours: Double = 0
+    var cleanAfterHours: Double = 40
+    var filterAfterHours: Double = 150
+    var filterWashDue = false
+    var autoClean = false
     /// Electricity: power now, kWh today and this month, and kWh for each of the last 24 hours.
     var powerW: Int?
     var todayKWh: Double = 0
@@ -90,6 +98,12 @@ struct ACState: Decodable, Equatable {
         case hasLouverV = "has_louver_v"
         case hasLouverH = "has_louver_h"
         case hasFanPercent = "has_fan_percent"
+        case hasSelfClean = "has_self_clean"
+        case cleanHours = "clean_hours"
+        case filterHours = "filter_hours"
+        case cleanAfterHours = "clean_after_hours"
+        case filterAfterHours = "filter_after_hours"
+        case filterWashDue = "filter_wash_due"
         case powerW = "power_w"
         case todayKWh = "today_kwh"
         case monthKWh = "month_kwh"
@@ -144,11 +158,18 @@ struct ACState: Decodable, Equatable {
         hasLouverV = value(.hasLouverV, false)
         hasLouverH = value(.hasLouverH, false)
         hasFanPercent = value(.hasFanPercent, false)
+        hasSelfClean = value(.hasSelfClean, false)
+        cleanHours = value(.cleanHours, 0.0)
+        filterHours = value(.filterHours, 0.0)
+        cleanAfterHours = value(.cleanAfterHours, 40.0)
+        filterAfterHours = value(.filterAfterHours, 150.0)
+        filterWashDue = value(.filterWashDue, false)
         dryingMinutesLeft = try? c.decode(Int.self, forKey: .dryingMinutesLeft)
         let settings = (try? c.decode(Settings.self, forKey: .settings)) ?? Settings()
         dryCoil = settings.dryCoil
         pricePerKWh = settings.price
         restoreAfterOutage = settings.restore
+        autoClean = settings.autoClean
         let event = try? c.decode([String: String].self, forKey: .event)
         eventKind = event?["kind"]
         eventText = event?["text"]
@@ -179,10 +200,12 @@ struct ACState: Decodable, Equatable {
         var dryCoil = false
         var price = 0.0
         var restore = false
+        var autoClean = false
         enum CodingKeys: String, CodingKey {
             case dryCoil = "dry_coil"
             case price = "price_per_kwh"
             case restore = "restore_after_outage"
+            case autoClean = "auto_clean"
         }
         init() {}
         init(from decoder: Decoder) throws {
@@ -190,6 +213,7 @@ struct ACState: Decodable, Equatable {
             dryCoil = (try? c.decode(Bool.self, forKey: .dryCoil)) ?? false
             price = (try? c.decode(Double.self, forKey: .price)) ?? 0
             restore = (try? c.decode(Bool.self, forKey: .restore)) ?? false
+            autoClean = (try? c.decode(Bool.self, forKey: .autoClean)) ?? false
         }
     }
 }
@@ -298,6 +322,7 @@ final class ACClient: ObservableObject {
     func toggleACDisplay() { send(["type": "ac_display"]) }
     /// On again with the settings it had when last seen running.
     func restoreAC() { send(["type": "ac_restore"]) }
+    func filterWashed() { send(["type": "ac_filter_cleaned"]) }
     /// One of the user's choices the helper keeps, like "dry_coil".
     func setSetting(_ name: String, _ value: Any) { send(["type": "ac_setting", "name": name, "value": value]) }
     /// Turn the AC off after `minutes`, or cancel the timer with nil.

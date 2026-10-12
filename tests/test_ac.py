@@ -32,6 +32,8 @@ class FakeAC:
         self.supports_purifier = self.supports_breeze_away = True
         self.supports_vertical_swing_angle = self.supports_horizontal_swing_angle = True
         self.supports_custom_fan_speed = True
+        self.supports_self_clean = True
+        self.cleans_started = 0
         self.total_kwh, self.power = 256.03, 225.0
         self.online = True
         self.min_target_temperature, self.max_target_temperature = 16.0, 30.0
@@ -57,6 +59,10 @@ class FakeAC:
     async def apply(self):
         await asyncio.sleep(0)
         self.applied.append((self.target_temperature, self.operational_mode))
+
+    async def start_self_clean(self):
+        await asyncio.sleep(0)
+        self.cleans_started += 1
 
 
 def online_session(device=None):

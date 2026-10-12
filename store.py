@@ -13,6 +13,7 @@ CONFIG_DIR = Path.home() / ".config" / "breeze"
 AC_FILE = CONFIG_DIR / "ac.json"
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 ENERGY_FILE = CONFIG_DIR / "energy.json"
+CARE_FILE = CONFIG_DIR / "care.json"
 MAX_PRICE = 100_000.0  # naira per kWh; anything above is a typo
 
 # The user's choices, all off until turned on.
@@ -23,6 +24,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "restore_after_outage": False,
     # Naira per kWh, set by the user. 0 means not set: kWh only, no money.
     "price_per_kwh": 0.0,
+    # Start a self clean now and then, by day, while the AC is off. See care.py.
+    "auto_clean": False,
 }
 # Drying ends when the coil is this close to the room temperature, or after DRY_MAX_MINUTES.
 DRY_DONE_WITHIN = 1.0
@@ -35,6 +38,7 @@ WET_MODES = ("cool", "dry", "auto")
 SETTING_RULES: dict[str, Callable[[Any], bool]] = {
     "dry_coil": lambda v: isinstance(v, bool),
     "restore_after_outage": lambda v: isinstance(v, bool),
+    "auto_clean": lambda v: isinstance(v, bool),
     "price_per_kwh": lambda v: isinstance(v, float) and math.isfinite(v) and 0 <= v <= MAX_PRICE,
 }
 

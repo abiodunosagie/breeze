@@ -66,6 +66,13 @@ struct EnergyLine: View {
             Toggle("Dry the Coil After Cooling", isOn: Binding(get: { ac.dryCoil }, set: { client.setSetting("dry_coil", $0) }))
             Toggle("Switch Back On After a Power Cut", isOn: Binding(get: { ac.restoreAfterOutage },
                                                                     set: { client.setSetting("restore_after_outage", $0) }))
+            if ac.hasSelfClean {
+                Toggle("Self Clean Every \(Int(ac.cleanAfterHours)) Hours of Cooling", isOn: Binding(
+                    get: { ac.autoClean }, set: { client.setSetting("auto_clean", $0) }))
+            }
+            Button("Filter Washed (\(Int(ac.filterHours.rounded())) of \(Int(ac.filterAfterHours)) hours)") {
+                client.filterWashed()
+            }
             Divider()
             Button(ac.pricePerKWh > 0 ? "Electricity Price: \(Self.naira(ac.pricePerKWh)) per kWh…" : "Set Electricity Price…") {
                 priceText = ac.pricePerKWh > 0 ? String(format: "%g", ac.pricePerKWh) : ""
@@ -82,7 +89,7 @@ struct EnergyLine: View {
         .buttonStyle(PressScale())
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("More: the unit's light, Breeze Away, drying the coil, power cuts, electricity price")
+        .help("More: the unit's light, Breeze Away, drying the coil, power cuts, self clean, filter, electricity price")
     }
 
     private var priceForm: some View {

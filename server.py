@@ -89,6 +89,10 @@ async def _ac_setting(session: Session, _ws: web.WebSocketResponse, message: dic
     session.ac.set_setting(message.get("name"), message.get("value"))
 
 
+async def _ac_filter_cleaned(session: Session, _ws: web.WebSocketResponse, _message: dict[str, Any]) -> None:
+    session.ac.filter_cleaned()
+
+
 HANDLERS: dict[str, Handler] = {
     "ac_get": _ac_get,
     "ac_set": _ac_set,
@@ -96,6 +100,7 @@ HANDLERS: dict[str, Handler] = {
     "ac_timer": _ac_timer,
     "ac_setting": _ac_setting,
     "ac_restore": _ac_restore,
+    "ac_filter_cleaned": _ac_filter_cleaned,
 }
 # These wait on the AC; run them beside the read loop so other buttons keep working.
 BACKGROUND_HANDLERS = frozenset({"ac_display"})

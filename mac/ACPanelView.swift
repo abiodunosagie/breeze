@@ -166,7 +166,7 @@ private struct ACControls: View {
             return Notice(text: "Drying the coil, up to \(minutes) min. Power stops it now.", symbol: "wind", tint: ACTheme.accent)
         }
         if ac.cleaning { return Notice(text: "Self-cleaning. Power stops it.", symbol: "sparkles", tint: ACTheme.eco) }
-        if ac.filterDue { return Notice(text: "Time to wash the filter.", symbol: "aqi.medium", tint: ACTheme.caution) }
+        if ac.filterDue || ac.filterWashDue { return Notice(text: "Time to wash the filter.", symbol: "aqi.medium", tint: ACTheme.caution) }
         if !ac.display && ac.power { return Notice(text: "The unit's light is off.", symbol: "lightbulb.slash", tint: ACTheme.dim) }
         return nil
     }
