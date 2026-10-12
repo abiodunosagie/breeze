@@ -87,6 +87,7 @@ private struct ACControls: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
+            if let request = client.linkRequest { linkConfirm(request) }
             header
             ACUnit(target: shown, ac: ac)
                 .frame(height: 150)
@@ -138,6 +139,21 @@ private struct ACControls: View {
     }
 
     private var fanOnly: Bool { ac.mode == "fan" }
+
+    /// A breeze:// link asked for something: nothing happens until the user says yes here.
+    private func linkConfirm(_ request: LinkRequest) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "link").foregroundStyle(ACTheme.accent)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("A link asks to").font(.system(size: 11)).foregroundStyle(ACTheme.dim)
+                Text(request.summary).font(.system(size: 13, weight: .semibold)).lineLimit(2)
+            }
+            Spacer(minLength: 6)
+            Button("Cancel") { client.linkRequest = nil }.buttonStyle(.borderless).foregroundStyle(ACTheme.dim)
+            Button("Do It") { client.confirmLink() }.buttonStyle(.borderless).foregroundStyle(ACTheme.accent)
+                .font(.system(size: 13, weight: .semibold))
+        }
+    }
 
     /// What the AC is really doing, under the big number.
     private var statusLine: String {

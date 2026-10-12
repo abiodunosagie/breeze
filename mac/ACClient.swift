@@ -303,6 +303,19 @@ final class ACClient: ObservableObject {
     @Published private(set) var schedulesRefused = 0
     /// The phone remote, as the helper reports it to the Mac (never to phones: the url holds the token).
     @Published private(set) var phone: PhoneInfo?
+    /// A breeze:// link waiting for the user's yes in the panel.
+    @Published var linkRequest: LinkRequest? {
+        didSet {
+            // Gone from the panel once too old to be applied.
+            linkExpiry?.cancel()
+            guard let request = linkRequest else { return }
+            linkExpiry = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(URLRouter.staleSeconds))
+                if !Task.isCancelled, self?.linkRequest == request { self?.linkRequest = nil }
+            }
+        }
+    }
+    private var linkExpiry: Task<Void, Never>?
 
     /// Called when the link drops, before reconnecting. Lets the app restart the helper.
     var onLinkLost: (() async -> Void)?
@@ -394,6 +407,16 @@ final class ACClient: ObservableObject {
     /// On again with the settings it had when last seen running.
     func restoreAC() { send(["type": "ac_restore"]) }
     func filterWashed() { send(["type": "ac_filter_cleaned"]) }
+    /// The user said yes to the waiting link. A stale one is dropped, never applied late.
+    func confirmLink() {
+        guard let request = linkRequest else { return }
+        linkRequest = nil
+        guard Date().timeIntervalSince(request.arrived) <= URLRouter.staleSeconds else {
+            show("That link waited too long. Open it again.")
+            return
+        }
+        setAC(request.changes)
+    }
     func refreshPhone() { send(["type": "ac_phone"]) }
     func setPhone(enabled: Bool) { send(["type": "ac_phone_set", "enabled": enabled]) }
     func resetPhone() { send(["type": "ac_phone_reset"]) }

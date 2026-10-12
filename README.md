@@ -33,6 +33,10 @@
 - Control Option Command Up and Down: one degree warmer or cooler
 - Control Option Command P: power
 
+**Links** (for Shortcuts, scripts and Couch scenes)
+- `breeze://on`, `breeze://off`, and `breeze://set?target=24&mode=cool` (either part may be left out).
+- Nothing happens until you press Do It in the panel, and a link left waiting a minute is dropped.
+
 **Careful by design**
 - While the AC cleans itself, every key but power is refused, so a stray click cannot stop the clean.
 - Each control shows only what your unit supports. Settings changed quickly (a slider drag) go out as one command.

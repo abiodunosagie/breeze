@@ -144,6 +144,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    /// breeze:// links: shown in the panel for the user to confirm, see URLRouter.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let url = urls.first else { return }
+        switch URLRouter.request(for: url) {
+        case .success(let request): client.linkRequest = request
+        case .failure(let error): client.show(error.message)
+        }
+        if panel?.isShown != true { togglePanel() }
+    }
+
     @objc func togglePanel() {
         panel?.toggle(below: statusItem?.button)
     }
