@@ -19,6 +19,7 @@ let socket = null;
 let retryTimer = 0;
 let toastTimer = 0;
 let state = { status: "connecting" };
+let lastNotice;  // the notice id last seen; undefined until the first state arrives
 
 // ------------------------------------------------------------ pairing token
 
@@ -91,7 +92,8 @@ function fillSelect(select, names, labels, current) {
     select.replaceChildren(...names.map((name) => new Option(labels[name] || name, name)));
     select.dataset.names = wanted;
   }
-  select.value = current ?? "";
+  const shown = current ?? "";
+  if (select.value !== shown) select.value = shown;  // untouched while it already shows it
 }
 
 function duration(minutes) {
@@ -124,9 +126,11 @@ function render(next) {
   const timer = $("timer");
   const choices = next.timer_choices || [];
   const timerNames = ["", ...choices.map(String), ...(next.off_in ? ["cancel"] : [])];
-  const timerLabels = { "": next.off_in ? `Off in ${duration(next.off_in)}` : "Off", cancel: "Cancel Timer" };
+  // The first option's text counts down; only that text changes, so an open picker stays open.
+  const timerLabels = { "": next.off_in ? "On" : "Off", cancel: "Cancel Timer" };
   for (const minutes of choices) timerLabels[String(minutes)] = `Off in ${duration(minutes)}`;
   fillSelect(timer, timerNames, timerLabels, "");
+  timer.options[0].textContent = next.off_in ? `Off in ${duration(next.off_in)}` : "Off";
 
   for (const [id, shown] of [["eco", next.has_eco], ["turbo", next.has_turbo], ["sleep", true]]) {
     const tile = $(id);
@@ -137,9 +141,9 @@ function render(next) {
   for (const tile of document.querySelectorAll(".tile")) {
     tile.classList.toggle("disabled", !online || !next.power || !!next.cleaning);
   }
-  if (next.notice && next.notice_id !== render.lastNotice) {
-    if (render.lastNotice !== undefined) toast(next.notice);
-    render.lastNotice = next.notice_id;
+  if (next.notice_id !== lastNotice) {
+    if (lastNotice !== undefined && next.notice) toast(next.notice);
+    lastNotice = next.notice_id;
   }
 }
 
@@ -175,10 +179,12 @@ for (const id of ["eco", "turbo", "sleep"]) {
   $(id).addEventListener("click", () => set({ [id]: !state[id] }));
 }
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") {
-    connect();
-    if (socket && socket.readyState === WebSocket.OPEN) send({ type: "ac_get" });
-  }
+  if (document.visibilityState !== "visible") return;
+  // After the phone slept, an "open" socket may be dead: start a fresh one rather than trust it.
+  const old = socket;
+  socket = null;
+  if (old) old.close();
+  connect();
 });
 
 connect();

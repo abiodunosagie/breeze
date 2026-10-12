@@ -303,19 +303,13 @@ final class ACClient: ObservableObject {
     @Published private(set) var schedulesRefused = 0
     /// The phone remote, as the helper reports it to the Mac (never to phones: the url holds the token).
     @Published private(set) var phone: PhoneInfo?
-    /// A breeze:// link waiting for the user's yes in the panel.
-    @Published var linkRequest: LinkRequest? {
-        didSet {
-            // Gone from the panel once too old to be applied.
-            linkExpiry?.cancel()
-            guard let request = linkRequest else { return }
-            linkExpiry = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(URLRouter.staleSeconds))
-                if !Task.isCancelled, self?.linkRequest == request { self?.linkRequest = nil }
-            }
-        }
-    }
-    private var linkExpiry: Task<Void, Never>?
+    /// breeze:// links waiting for the user's yes in the panel, oldest first. A new link joins the
+    /// queue and never replaces the one on screen, so what the user confirms is what they read.
+    @Published private(set) var linkRequests: [LinkRequest] = []
+    static let maxQueuedLinks = 3
+    /// The last event a notification went out for. Kept across reconnects (the helper's ids only rise),
+    /// nil until the first message, which only sets it: what happened before Breeze started is no news.
+    private var lastEventId: Int?
 
     /// Called when the link drops, before reconnecting. Lets the app restart the helper.
     var onLinkLost: (() async -> Void)?
@@ -363,11 +357,11 @@ final class ACClient: ObservableObject {
         case "ac":
             if let next = try? JSONDecoder().decode(ACState.self, from: data) {
                 if !next.notice.isEmpty, next.noticeId != ac?.noticeId { show(next.notice) }
-                // The first message after connecting carries the last event; only newer ones notify.
-                if let old = ac {
-                    let seen = old.events.last?.id ?? 0
+                let newest = next.events.last?.id ?? 0
+                if let seen = lastEventId {
                     for event in next.events where event.id > seen { onEvent?(event.kind, event.text) }
                 }
+                lastEventId = Swift.max(lastEventId ?? 0, newest)
                 ac = next
             }
         case "phone":
@@ -407,16 +401,34 @@ final class ACClient: ObservableObject {
     /// On again with the settings it had when last seen running.
     func restoreAC() { send(["type": "ac_restore"]) }
     func filterWashed() { send(["type": "ac_filter_cleaned"]) }
-    /// The user said yes to the waiting link. A stale one is dropped, never applied late.
-    func confirmLink() {
-        guard let request = linkRequest else { return }
-        linkRequest = nil
-        guard Date().timeIntervalSince(request.arrived) <= URLRouter.staleSeconds else {
+    /// A link to confirm. Past the queue's size, more links are refused, not queued.
+    func addLink(_ request: LinkRequest) {
+        pruneLinks()
+        guard linkRequests.count < Self.maxQueuedLinks else {
+            show("Too many breeze:// links at once. That one was ignored.")
+            return
+        }
+        linkRequests.append(request)
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(URLRouter.staleSeconds))
+            self?.pruneLinks()
+        }
+    }
+
+    /// The user said yes to this link (by id: the one they were reading). A stale one is never applied.
+    func confirmLink(_ id: UUID) {
+        guard let request = linkRequests.first(where: { $0.id == id }) else { return }
+        linkRequests.removeAll { $0.id == id }
+        guard !request.isStale() else {
             show("That link waited too long. Open it again.")
             return
         }
         setAC(request.changes)
     }
+
+    func cancelLink(_ id: UUID) { linkRequests.removeAll { $0.id == id } }
+
+    private func pruneLinks() { linkRequests.removeAll { $0.isStale() } }
     func refreshPhone() { send(["type": "ac_phone"]) }
     func setPhone(enabled: Bool) { send(["type": "ac_phone_set", "enabled": enabled]) }
     func resetPhone() { send(["type": "ac_phone_reset"]) }

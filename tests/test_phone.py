@@ -78,7 +78,7 @@ def test_turning_it_on_makes_a_new_code_and_off_closes_phones(monkeypatch):
 
     async def run():
         access = phone.PhoneAccess(run_socket=None, close_phones=close)
-        monkeypatch.setattr(access, "start", lambda: asyncio.sleep(0))
+        monkeypatch.setattr(access, "_start", lambda: asyncio.sleep(0))  # never a real port in tests
         await access.set_enabled(True)
         first = access.token
         await access.set_enabled(False)
@@ -118,3 +118,80 @@ def test_a_bad_phone_file_means_off():
     store.write_private(store.PHONE_FILE, {"enabled": True, "token": 5})
     access = phone.PhoneAccess(run_socket=None, close_phones=None)
     assert access.enabled is False and access.token is None
+
+
+def test_allowed_hosts_cover_every_lan_address_and_the_name(monkeypatch):
+    monkeypatch.setattr(phone.socket, "gethostname", lambda: "Studio")
+    monkeypatch.setattr(phone, "interface_addresses", lambda: ["192.168.1.2", "10.0.0.5"])
+    monkeypatch.setattr(phone, "lan_address", lambda: "100.64.0.9")  # a VPN on the default route
+    access = phone.PhoneAccess(run_socket=None, close_phones=None)
+    access.enabled, access.token = True, "code"
+    hosts = access._allowed_hosts()
+    assert {"studio:8768", "studio.local:8768", "192.168.1.2:8768", "10.0.0.5:8768", "100.64.0.9:8768"} == hosts
+    assert access.info()["url"] == "http://192.168.1.2:8768/?t=code"  # Wi-Fi first, not the VPN
+
+
+def served(path):
+    """A request to the real phone routes, on 127.0.0.1 and a free port."""
+    async def run():
+        async def socket_page(_request):
+            return web.Response(text="socket")
+        access = phone.PhoneAccess(run_socket=socket_page, close_phones=None)
+        access.token = "pairing-code"
+        app = web.Application(middlewares=[access._guard])
+        app.router.add_get("/ws", access._socket)
+        app.router.add_get("/manifest.webmanifest", access._manifest)
+        async with TestClient(TestServer(app, host="127.0.0.1")) as client:
+            access._allowed_hosts = lambda: {f"127.0.0.1:{client.server.port}"}
+            response = await client.get(path)
+            return response.status, await response.text()
+    return asyncio.run(run())
+
+
+def test_the_socket_needs_the_pairing_code():
+    assert served("/ws?t=wrong")[0] == 403
+    assert served("/ws")[0] == 403
+    assert served("/ws?t=pairing-code") == (200, "socket")
+
+
+def test_the_manifest_only_carries_a_valid_code():
+    assert json.loads(served("/manifest.webmanifest?t=pairing-code")[1])["start_url"] == "/?t=pairing-code"
+    assert json.loads(served("/manifest.webmanifest?t=guess")[1])["start_url"] == "/"
+
+
+def test_closing_phones_is_quick_and_all_at_once():
+    class Slow:
+        def __init__(self):
+            self.closed = False
+
+        async def close(self):
+            await asyncio.sleep(0.2)
+            self.closed = True
+
+    async def run():
+        session = server.Session()
+        phones = [Slow() for _ in range(5)]
+        session.phones.update(phones)
+        loop = asyncio.get_running_loop()
+        began = loop.time()
+        await session.close_phones()
+        return loop.time() - began, all(p.closed for p in phones), session.phones
+    took, all_closed, left = asyncio.run(run())
+    assert took < 0.5 and all_closed and left == set()
+
+
+def test_off_during_a_slow_start_leaves_no_server(monkeypatch):
+    async def run():
+        access = phone.PhoneAccess(run_socket=None, close_phones=lambda: asyncio.sleep(0))
+
+        async def slow_start():
+            await asyncio.sleep(0.05)
+            access._runner = "running"
+
+        async def stop():
+            access._runner = None
+        monkeypatch.setattr(access, "_start", slow_start)
+        monkeypatch.setattr(access, "_stop", stop)
+        await asyncio.gather(access.set_enabled(True), access.set_enabled(False))
+        return access._runner, access.enabled
+    assert asyncio.run(run()) == (None, False)

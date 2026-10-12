@@ -12,10 +12,12 @@ events or anything about the link to the AC, and may only use the everyday contr
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import logging
 import secrets
 import socket
+import subprocess
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -25,12 +27,14 @@ from aiohttp import web
 
 import store
 
-PHONE_PORT = 8768  # Couch's phone remote has 8766, Breeze's own helper 8767
+PHONE_PORT = 8768  # one above the helper's own port (8767, see build-app.sh), clear of it
 PAGE_DIR = Path(__file__).parent / "phone"
 TOKEN_BYTES = 24
 # The LAN address is looked up again after this long, in case the Mac moved networks.
 ADDRESS_CACHE_SECONDS = 30
 SHUTDOWN_SECONDS = 2.0
+# The Mac's Wi-Fi and Ethernet ports, asked first: the default route may be a VPN a phone cannot reach.
+LAN_INTERFACES = ("en0", "en1")
 
 # All a phone ever sees.
 PHONE_KEYS = ("type", "status", "notice", "notice_id", "power", "mode", "target", "indoor", "outdoor", "fan", "swing",
@@ -47,6 +51,20 @@ SocketRunner = Callable[[web.Request], Awaitable[web.WebSocketResponse]]
 def phone_view(message: dict[str, Any]) -> dict[str, Any]:
     """The phone's copy of an AC message: only the names in PHONE_KEYS."""
     return {key: message[key] for key in PHONE_KEYS if key in message}
+
+
+def interface_addresses() -> list[str]:
+    """IPv4 addresses of the Mac's Wi-Fi and Ethernet ports, in LAN_INTERFACES order."""
+    found = []
+    for name in LAN_INTERFACES:
+        try:
+            out = subprocess.run(["/usr/sbin/ipconfig", "getifaddr", name], capture_output=True, text=True, timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        address = out.stdout.strip()
+        if out.returncode == 0 and address and address not in found:
+            found.append(address)
+    return found
 
 
 def lan_address() -> str | None:
@@ -68,8 +86,10 @@ class PhoneAccess:
         self._run_socket = run_socket
         self._close_phones = close_phones
         self._runner: web.AppRunner | None = None
-        self._address: str | None = None
+        self._addresses: list[str] = []  # the first goes in the QR code
         self._address_checked = 0.0
+        # Turning on, off and forgetting run one at a time, so the server never outlives "off".
+        self._switching = asyncio.Lock()
         settings = store.read_json_dict(store.PHONE_FILE)
         token = settings.get("token")
         self.token: str | None = token if isinstance(token, str) and token else None
@@ -81,32 +101,43 @@ class PhoneAccess:
     # ------------------------------------------------------------ control
 
     async def set_enabled(self, enabled: bool) -> None:
-        if enabled and not self.enabled:
-            # A fresh code every time it is turned on, so turning it off really locks old phones out.
-            self.token = secrets.token_urlsafe(TOKEN_BYTES)
-        self.enabled = enabled
-        self._save()
-        if enabled:
-            await self.start()
-        else:
-            await self.stop()
+        async with self._switching:
+            if enabled and not self.enabled:
+                # A fresh code every time it is turned on, so turning it off really locks old phones out.
+                self.token = secrets.token_urlsafe(TOKEN_BYTES)
+            self.enabled = enabled
+            self._save()
+            if enabled:
+                await self._start()
+            else:
+                await self._stop()
 
     async def reset_token(self) -> None:
         """Forget every paired phone: a new token, and open phone pages drop off."""
-        self.token = secrets.token_urlsafe(TOKEN_BYTES)
-        self._save()
-        if self._runner:
-            await self.stop()
-            await self.start()
+        async with self._switching:
+            self.token = secrets.token_urlsafe(TOKEN_BYTES)
+            self._save()
+            if self._runner:
+                await self._stop()
+                await self._start()
+
+    async def start(self) -> None:
+        async with self._switching:
+            await self._start()
+
+    async def stop(self) -> None:
+        async with self._switching:
+            await self._stop()
 
     def info(self) -> dict[str, Any]:
         """For the Mac app only: never sent to phones, since it holds the token."""
-        address = self._current_address()
+        addresses = self._current_addresses()
+        address = addresses[0] if addresses else None
         # The token stays in the address: Home Screen apps keep their own storage, the address survives.
         url = f"http://{address}:{PHONE_PORT}/?t={self.token}" if self.enabled and address and self.token else None
         return {"type": "phone", "enabled": self.enabled, "running": self._runner is not None, "url": url}
 
-    async def start(self) -> None:
+    async def _start(self) -> None:
         if self._runner or not self.enabled:
             return
         app = web.Application(middlewares=[self._guard])
@@ -128,7 +159,7 @@ class PhoneAccess:
         self._runner = runner
         log.info("phone remote on port %s", PHONE_PORT)
 
-    async def stop(self) -> None:
+    async def _stop(self) -> None:
         # Close open phone pages first: a revoked phone must lose control now.
         await self._close_phones()
         if self._runner:
@@ -137,19 +168,22 @@ class PhoneAccess:
 
     # ------------------------------------------------------------ requests
 
-    def _current_address(self) -> str | None:
+    def _current_addresses(self) -> list[str]:
         if time.monotonic() - self._address_checked > ADDRESS_CACHE_SECONDS:
-            self._address = lan_address()
+            found = interface_addresses()
+            routed = lan_address()
+            if routed and routed not in found:
+                found.append(routed)
+            self._addresses = found
             self._address_checked = time.monotonic()
-        return self._address
+        return self._addresses
 
     def _allowed_hosts(self) -> set[str]:
         local = socket.gethostname()
         hosts = {f"{local}:{PHONE_PORT}"}
         if not local.endswith(".local"):
             hosts.add(f"{local}.local:{PHONE_PORT}")
-        address = self._current_address()
-        if address:
+        for address in self._current_addresses():
             hosts.add(f"{address}:{PHONE_PORT}")
         return {host.lower() for host in hosts}
 

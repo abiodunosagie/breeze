@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import math
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -148,7 +149,9 @@ class ACSession:
         self._last_running: dict[str, Any] | None = None  # settings the last time it was seen on
         # For notifications: the latest few, each with a rising id, so two in one reading both go out.
         self.events: list[dict[str, Any]] = []
-        self._event_id = 0
+        # Ids carry on from the wall clock, so after a restart of the helper they still only rise
+        # and the app, which remembers the last one it notified, never drops or repeats one.
+        self._event_id = int(time.time() * 1000)
         # The unit's last fault code and filter light. None until the first reading, which only
         # notes them: the panel shows what is already on, a restart of Breeze is no news.
         self._fault_seen: int | None = None

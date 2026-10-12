@@ -18,7 +18,8 @@ struct PhoneView: View {
                 .toggleStyle(.switch)
 
             if let phone = client.phone, phone.enabled {
-                if let url = phone.url, let image = Self.qrCode(for: url) {
+                if let url = phone.url {
+                    if let image = Self.qrCode(for: url) {
                     HStack(alignment: .top, spacing: 16) {
                         Image(nsImage: image)
                             .interpolation(.none)
@@ -33,6 +34,10 @@ struct PhoneView: View {
                             step(3, "Open Breeze from the home screen any time.")
                         }
                         .font(.callout)
+                    }
+                    } else {
+                        Text("Breeze could not draw the code. Turn the phone remote off and on again.")
+                            .font(.callout).foregroundStyle(.orange)
                     }
                     Text("The phone must be on the same Wi-Fi, and this Mac awake with Breeze running. If macOS asks whether to accept incoming connections, choose Allow.")
                         .font(.caption).foregroundStyle(.secondary)

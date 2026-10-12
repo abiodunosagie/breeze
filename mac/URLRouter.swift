@@ -1,10 +1,13 @@
 import Foundation
 
 /// A breeze:// link waiting for the user to confirm it in the panel.
-struct LinkRequest: Equatable {
+struct LinkRequest: Equatable, Identifiable {
+    let id = UUID()
     let changes: [String: AnyHashable]
     let summary: String
     let arrived: Date
+
+    func isStale(now: Date = Date()) -> Bool { now.timeIntervalSince(arrived) > URLRouter.staleSeconds }
 }
 
 /// Handles breeze:// links from Shortcuts, scripts, bookmarks and Couch scenes:
@@ -17,8 +20,9 @@ struct LinkRequest: Equatable {
 @MainActor
 enum URLRouter {
     /// A request older than this is dropped instead of applied, so a forgotten one never fires later.
-    static let staleSeconds: TimeInterval = 60
-    private static let modes = ["auto", "cool", "dry", "fan", "heat"]
+    nonisolated static let staleSeconds: TimeInterval = 60
+    /// Whole degrees a link may ask for; the helper checks the unit's own range too.
+    static let targetRange = 10...35
 
     /// The request this link asks for, or the reason it cannot be followed.
     static func request(for url: URL, now: Date = Date()) -> Result<LinkRequest, LinkError> {
@@ -34,13 +38,12 @@ enum URLRouter {
             var changes: [String: AnyHashable] = ["power": true]
             var parts: [String] = []
             if let text = value("target") {
-                // Whole degrees in a sane range; the helper checks the unit's own range too.
-                guard let degrees = Int(text), (10...35).contains(degrees) else { return .failure(.badTarget) }
+                guard let degrees = Int(text), targetRange.contains(degrees) else { return .failure(.badTarget) }
                 changes["target"] = Double(degrees)
                 parts.append("\(degrees)°C")
             }
             if let mode = value("mode") {
-                guard modes.contains(mode) else { return .failure(.badMode) }
+                guard ACNames.modes[mode] != nil else { return .failure(.badMode) }
                 changes["mode"] = mode
                 parts.append(ACNames.modes[mode]?.0 ?? mode)
             }

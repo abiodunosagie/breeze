@@ -534,3 +534,13 @@ def test_what_is_already_on_at_start_is_no_news():
     session._device.error_code, session._device.filter_alert = 7, True
     session._watch_unit(session._device)
     assert session.message()["events"] == []
+
+
+def test_event_ids_keep_rising_across_a_restart(monkeypatch):
+    first = online_session()
+    for _ in range(3):
+        first._send_event("power_back", "a")
+    monkeypatch.setattr(ac.time, "time", lambda: 10**10)  # a later start of the helper
+    later = online_session()
+    later._send_event("power_back", "b")
+    assert later.message()["events"][-1]["id"] > first.message()["events"][-1]["id"]

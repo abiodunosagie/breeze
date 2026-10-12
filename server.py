@@ -23,6 +23,10 @@ from phone import PHONE_CHANGES, PhoneAccess, phone_view
 
 TOKEN_HEADER = "X-Breeze-Token"
 MAX_MESSAGE_BYTES = 4096
+# WebSocket pings, so a vanished client (a Mac app gone, a phone off the Wi-Fi) is noticed.
+HEARTBEAT_SECONDS = 20
+# How long closing a phone's socket may wait for the phone to answer; a vanished one never does.
+PHONE_CLOSE_SECONDS = 1.0
 PARENT_CHECK_SECONDS = 5.0
 BAD_MESSAGE = "Bad message."
 
@@ -55,7 +59,9 @@ class Session:
                 await reply(ws, view)
 
     async def run_phone_socket(self, request: web.Request) -> web.WebSocketResponse:
-        ws = web.WebSocketResponse(heartbeat=20, max_msg_size=MAX_MESSAGE_BYTES)
+        # timeout: how long a close waits for the phone's answer.
+        ws = web.WebSocketResponse(heartbeat=HEARTBEAT_SECONDS, max_msg_size=MAX_MESSAGE_BYTES,
+                                   timeout=PHONE_CLOSE_SECONDS)
         await ws.prepare(request)
         self.phones.add(ws)
         await reply(ws, phone_view(self.ac.message()))
@@ -68,9 +74,9 @@ class Session:
         return ws
 
     async def close_phones(self) -> None:
-        for ws in list(self.phones):
-            await ws.close()
-        self.phones.clear()
+        """All at once, each waiting at most PHONE_CLOSE_SECONDS, so dead phones never hold up the Mac."""
+        phones, self.phones = list(self.phones), set()
+        await asyncio.gather(*(ws.close() for ws in phones), return_exceptions=True)
 
 
 async def reply(ws: web.WebSocketResponse, message: dict[str, Any]) -> None:
@@ -239,7 +245,7 @@ async def health(_request: web.Request) -> web.Response:
 
 async def websocket(request: web.Request) -> web.WebSocketResponse:
     session = request.app[SESSION]
-    ws = web.WebSocketResponse(heartbeat=20, max_msg_size=MAX_MESSAGE_BYTES)
+    ws = web.WebSocketResponse(heartbeat=HEARTBEAT_SECONDS, max_msg_size=MAX_MESSAGE_BYTES)
     await ws.prepare(request)
     session.clients.add(ws)
     await reply(ws, session.ac.message())

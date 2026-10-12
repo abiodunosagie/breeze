@@ -148,7 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let url = urls.first else { return }
         switch URLRouter.request(for: url) {
-        case .success(let request): client.linkRequest = request
+        case .success(let request): client.addLink(request)
         case .failure(let error): client.show(error.message)
         }
         if panel?.isShown != true { togglePanel() }

@@ -105,7 +105,7 @@ struct EnergyLine: View {
             // A second popover needs its own anchor.
             Color.clear.popover(isPresented: $showingPhone, arrowEdge: .bottom) { PhoneView(client: client) }
         }
-        .help("More: schedules, phone remote, the unit's light, Breeze Away, drying the coil, power cuts, self clean, filter, electricity price")
+        .help("More options and settings")
     }
 
     private var priceForm: some View {
